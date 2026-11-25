@@ -1,6 +1,6 @@
 # SPEC — Bob : second brains cloisonnés pour un EM de prestataires
 
-> Statut : brouillon v0.8 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
+> Statut : brouillon v0.9 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
 
 ## 1. Contexte et objectifs
 
@@ -132,7 +132,7 @@ Résultats du test de la référence (sous-agent, faux amont local, données fic
   8. chemin amont fixe, jeton local unique, un seul verrou de détection (sous-agents parallèles sérialisés, non mesuré) ;
   9. format OpenAI uniquement (Claude Code non pris en charge) ;
   10. mapping en RAM avec TTL : un jeton émis après expiration devient inconnu.
-- **Recommandation du test : adapter, ne pas réécrire.** Priorités : entités personnalisées par brain, profils, secrets élargis, clés JSON préservées, champs de requête, `x-session-id` obligatoire, jeton par brain.
+- **Recommandation du test : adapter, ne pas réécrire.** Priorités : entités personnalisées par brain (glossaire, §4.5a), profils, secrets élargis (§4.5b), clés JSON préservées (§4.5d), champs de requête, `x-session-id` obligatoire, jeton par brain.
 
 Points à challenger :
 
@@ -141,7 +141,7 @@ Points à challenger :
 | Python + spaCy, service séparé | Garder (≈445 Mo de RAM par instance, bonne détection du français) ou tout en TypeScript (une seule pile, détection plus faible) ? |
 | Format OpenAI uniquement | Ajouter le format Anthropic pour Claude Code, ou passer par une conversion tierce ? |
 | ~~Restitution non streamée~~ | Résolu : streaming et `tool_calls` déjà gérés par la référence. |
-| Mapping en RAM, TTL 30 min | Convient à la sécurité, mais casse les sessions longues et les reprises. Alternative : mapping persisté dans le volume chiffré du brain. |
+| Mapping en RAM, TTL 30 min | Garder le mapping jetable par run (§4.5e) ; régler le TTL au-delà de la durée de session. |
 | Jeton local fixe | Un jeton par brain et par session, éventuellement lié au sandbox. |
 | Détection par modèle NER seul | Compléter par des listes propres au brain (consultants, client, projets) : **indispensable**, le NER rate les noms d'entreprise rares. |
 | Proxy générique | Intégrer l'audit, les profils par niveau et la session = brain en natif. |
@@ -167,6 +167,38 @@ Points à challenger :
 - Permissions Claude Code `deny` hors du brain en défense en profondeur.
 - Journal `audit.jsonl` (append-only) : ouverture/fermeture de brain, profil du proxy, connecteurs activés, changements de niveau, appels bloqués, exports, volumes de jetons masqués (sans valeurs). Le journal ne contient **pas** le contenu des échanges.
 - Anti-fuite : un contenu d'un brain ne peut pas être copié vers un brain de niveau moins strict sans confirmation (contrôle sur export/copie).
+
+### 4.5 Pistes à étudier pour le proxy
+
+**a) Glossaire / référentiel par brain (entités personnalisées)**
+- Fichier `glossary.yaml` dans le brain (donc chiffré avec lui) : entrées `{valeur, alias[], type}` avec types `PERSON`, `ORG`/`CLIENT`, `PROJECT`, `PLACE`, `TERM_PUBLIC`.
+- Correspondance exacte, insensible à la casse et aux accents, sur mots entiers, indépendante de la langue ; elle s'applique **avant** le NER et **prime** sur lui.
+- Alimentation : saisie dans la web UI, proposition automatique à partir des notes du brain (noms propres récurrents) validée par Romain, et fiches consultants du brain `team`.
+- `TERM_PUBLIC` remplace `EXCLUDE_TERMS` (technologies, produits, mots qui donnent des faux positifs).
+- Glossaire global (`agency`, noms de ton entreprise) fusionné avec celui du brain, sans que le glossaire d'un client soit visible d'un autre.
+- Sécurité : le glossaire contient justement les noms sensibles ; il vit dans le volume chiffré et n'est chargé qu'en RAM dans le proxy.
+
+**b) Système pour les secrets**
+- Trois couches : (1) règles par motifs étendues (clés API usuelles, `Bearer`, `sk-`, `ghp_`, PEM, `*_secret_*`, URL avec identifiants), à tirer d'un jeu de règles maintenu (type gitleaks) plutôt qu'à écrire à la main ; (2) détection par entropie sur les valeurs affectées à des clés suspectes ; (3) **registre de valeurs connues** : les secrets réellement présents (fichiers `.env`, Keychain, secrets du sandbox) sont enregistrés et masqués par correspondance exacte.
+- Les secrets sont toujours supprimés (`[REDACTED_SECRET]`), non réversibles, quel que soit le profil, **y compris en `open`**.
+- Prévention : ne pas monter les `.env` réels dans le sandbox, injecter les identifiants par le proxy du sandbox.
+- Rapport dans l'audit : nombre de secrets masqués par type, sans valeur.
+
+**c) Anglais et autres langues**
+- Cause : la référence n'embarque que le modèle spaCy `fr_core_news_lg` et fixe la langue à `fr` partout. L'anglais n'est donc détecté qu'en partie (noms de personnes, règles e-mail/IBAN/téléphone), pas les lieux ni les organisations ; l'arabe, le japonais, etc. ne sont pas couverts, sans alerte.
+- Options : (1) ajouter un modèle anglais (RAM et latence en plus, à mesurer) avec détection de langue par fragment ; (2) modèle multilingue plus léger mais moins précis ; (3) s'appuyer sur le glossaire (indépendant de la langue) et sur les règles par motifs.
+- Recommandation : glossaire + règles d'abord, ajout du modèle anglais si les tests de rappel le justifient ; en `strict`, alerte ou blocage quand la langue détectée n'est pas couverte.
+
+**d) Clés JSON pseudonymisées**
+- Le proxy parcourt les structures JSON (arguments d'outils, résultats d'outils en JSON) et ne transforme que les **valeurs** de type chaîne ; les clés, les noms de champs et la ponctuation JSON restent intacts.
+- Un faux positif NER sur une clé (`path` détecté comme lieu) ne peut donc plus altérer la structure.
+- Test d'acceptation : l'historique `tool_calls` renvoyé à l'amont conserve des clés identiques à l'original.
+
+**e) Pseudonymisation unique ou jetable à chaque run ?**
+- Elle n'a **pas** besoin d'être unique dans le temps. La stabilité n'est requise que **dans une conversation** : l'historique est renvoyé à chaque tour, et le modèle doit voir le même jeton pour la même entité.
+- Un mapping **jetable par run**, en RAM, supprimé à la fin de session, est donc le choix par défaut : rien à persister, rien à chiffrer, et moins de corrélation d'un run à l'autre côté fournisseur.
+- Impacts : (1) la numérotation change d'un run à l'autre (`PERSON_1` n'est pas la même personne), sans conséquence si le modèle ne voit que la conversation courante ; (2) si une session est reprise avec un historique en clair, le proxy reconstruit un nouveau mapping et tout reste cohérent ; (3) le cache de prompt du fournisseur ne sert pas d'un run à l'autre, ce qui est un coût mineur ; (4) un jeton émis par le modèle après expiration du TTL devient inconnu : le TTL doit dépasser la durée de session (voire expirer à la fermeture du sandbox) ; (5) les fichiers écrits par l'agent contiennent les vraies valeurs, car la réhydratation a lieu avant leur écriture.
+- Alternative écartée par défaut : jetons déterministes par brain (même entité, même jeton à chaque run). Avantage : stabilité entre runs. Inconvénients : table à persister et chiffrer, corrélation possible. À reconsidérer seulement si les sessions longues posent problème.
 
 ## 5. Connecteurs (mail, agenda, Drive)
 
@@ -294,10 +326,11 @@ Aucun modèle de langage local. La RAM sert à macOS, Docker, au proxy et au mod
 1. Claude Code vs opencode : v1 en opencode (chemin éprouvé) te convient-il, avec les connecteurs Claude reportés à M6 ?
 2. Proxy : réutiliser, adapter ou réécrire (tableau §4.1) ? Instance par brain ou unique ? Profils `open`/`standard`/`strict` et entités personnalisées (noms de client, consultants) : ce que le proxy permet déjà ?
 3. Verrou de détection unique : effet sur les sous-agents parallèles d'opencode (à mesurer) ; 445 Mo par instance acceptable si une instance par brain ?
-4. Interaction entre l'injection de secrets de `sbx` et le proxy (à tester au prototype).
-5. Chiffrement et suppression côté Anarlog après export.
-6. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
-7. Niveau de confiance acceptable pour le filtrage par libellés sur le compte entreprise (§5) ?
+4. Glossaire (§4.5a) : saisie manuelle, proposition automatique ou les deux ? Anglais (§4.5c) : modèle supplémentaire nécessaire d'après les tests de rappel ?
+5. Interaction entre l'injection de secrets de `sbx` et le proxy (à tester au prototype).
+6. Chiffrement et suppression côté Anarlog après export.
+7. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
+8. Niveau de confiance acceptable pour le filtrage par libellés sur le compte entreprise (§5) ?
 
 ## 14. Décisions prises
 
