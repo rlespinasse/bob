@@ -1,6 +1,6 @@
 # SPEC — Bob : second brains cloisonnés pour un EM de prestataires
 
-> Statut : brouillon v0.3 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
+> Statut : brouillon v0.4 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
 
 ## 1. Contexte et objectifs
 
@@ -69,14 +69,15 @@ sensitivity: restricted # open | restricted | forbidden
 engine: claude-code     # claude-code | opencode
 opencode:
   provider: ollama      # modèle local sur l'hôte macOS
-  model: <modèle local> # ex. gemma4 ; à choisir (voir §13)
+  model: <modèle local> # classe 7-8B quantifiée (voir §6.2)
 sandbox:
   network: deny-all     # deny-all | balanced ; forbidden => deny-all + localhost:11434 seul
   workspace: direct     # direct (rw) | clone (dépôt monté en lecture seule, copie privée)
   extra_mounts: []      # chemins en :ro uniquement
 encryption: true
 connectors:
-  account: client-acme  # profil de compte dédié, ou "agency" (compte agence filtré)
+  client_approval: approved  # approved | refused | pending ; refused/pending => connecteurs coupés
+  account: agency       # compte entreprise Claude (seul compte pour l'instant) ou profil dédié
   mail:     { labels: ["ACME"] }
   calendar: { calendars: ["ACME"] }
   drive:    { folders: ["<id dossier>"] }
@@ -125,15 +126,17 @@ Bob choisit le moteur d'après `sensitivity`. L'utilisateur ne peut pas lancer C
 
 Mode **mixte** :
 
-- **Compte agence** : brains `agency`, `team`, `personal` et clients tolérants. Bob filtre par libellés (mail), calendriers dédiés et dossiers Drive.
-- **Comptes/profils dédiés** : clients stricts ; connecteurs activés uniquement quand ce brain est actif.
+- **Compte entreprise Claude** (seul compte aujourd'hui) : connecteurs mail, agenda et Drive utilisables depuis les agents dans `sbx`. Bob filtre par libellés (mail), calendriers dédiés et dossiers Drive.
+- **Accord client** : l'usage des connecteurs sur les données d'un client dépend de son accord (cas réels : certains oui, d'autres non). Statut `client_approval` par brain ; `pending` et `refused` coupent les connecteurs et passent par l'import manuel dans `inbox/`.
+- **Comptes/profils dédiés** : possibles plus tard pour des clients exigeant un compte séparé ; hors v1.
 
 Règles :
 
 - À l'ouverture d'un brain, Bob n'active que les connecteurs déclarés dans `brain.yaml`, et désactive les autres de la session.
 - Les connecteurs cloud sont coupés pour les brains `forbidden`. Pour eux, import manuel dans `inbox/` (export mail, ICS, fichiers).
 - Le filtrage par libellé ne vaut pas isolation forte : une requête mal cadrée peut lire hors périmètre. Mitigation : consigne dans `CLAUDE.md` du brain et vérification dans l'audit. **[À VALIDER : niveau de confiance acceptable pour les clients tolérants]**
-- Dans un sandbox, les serveurs MCP passent par la passerelle MCP de l'hôte (les serveurs stdio locaux tournent sur l'hôte, donc hors sandbox : à traiter comme intégrations de confiance). **[À VALIDER : les connecteurs Claude mail/agenda/Drive sont-ils utilisables depuis un agent dans `sbx`, ou faut-il des serveurs MCP équivalents déclarés dans la passerelle ?]**
+- Dans un sandbox, les serveurs MCP passent par la passerelle MCP de l'hôte (les serveurs stdio locaux tournent sur l'hôte, donc hors sandbox : à traiter comme intégrations de confiance). Les connecteurs Claude sont utilisables depuis un agent dans `sbx` avec le compte entreprise (confirmé par Romain).
+- La politique réseau du sandbox doit autoriser les destinations des connecteurs, uniquement pour les brains `client_approval: approved`.
 - Écriture (envoi de mail, création d'événement) : confirmation explicite à chaque action.
 
 ## 6. Moteurs IA et sandboxes
@@ -151,12 +154,22 @@ Règles :
 - **Chiffrement** : le volume APFS du brain doit être monté **avant** le lancement du sandbox ; Bob arrête le sandbox avant de démonter/verrouiller.
 - Cycle de vie : création au premier lancement, arrêt à la fermeture ou au verrouillage, suppression à l'offboarding du client (avec le brain).
 
-### 6.2 Modèle local (macOS)
+### 6.2 Modèle local (macOS, MacBook Pro M2 16 Go)
 
-- Ollama installé sur l'hôte (Apple Silicon), écoute sur `localhost:11434`. Depuis le sandbox : `host.docker.internal:11434`, avec `sbx policy allow network localhost:11434`.
+- Ollama installé sur l'hôte, écoute sur `localhost:11434`. Depuis le sandbox : `host.docker.internal:11434`, avec `sbx policy allow network localhost:11434`.
 - Alternative : modèle GGUF géré par Docker Sandboxes (`--model` sans `--provider`).
-- Le modèle tourne sur l'hôte : sa mémoire est indépendante des limites du sandbox.
+- **Contrainte mémoire** : 16 Go partagés entre macOS, Docker et le modèle. Cible : modèle de classe 7-8 B quantifié 4 bits (environ 5 Go) avec contexte limité (8 à 16 k tokens). Un modèle plus gros dégrade la machine.
+- Conséquence produit : les tâches `forbidden` (1:1, suivi RH) sont courtes et structurées ; Bob découpe le contexte (résumés par brain, index) plutôt que de charger des documents entiers.
+- Le modèle exact est choisi par benchmark sur des tâches réelles (résumé de 1:1, extraction d'actions, rédaction de note) : critères qualité en français, vitesse, RAM. Voir §13.
 - Pré-requis vérifiés au démarrage : Docker Sandboxes (`sbx`), Ollama, modèle téléchargé, Claude Code, opencode. Sinon blocage des brains concernés avec message.
+
+### 6.3 Transcription vocale (Apple Speech)
+
+- Reconnaissance vocale **sur l'appareil** d'Apple (framework Speech, mode on-device), utilisée sur l'hôte, hors sandbox, via un petit utilitaire Swift appelé par Bob.
+- Usages : dictée de notes (1:1, compte rendu) et transcription d'un fichier audio déposé dans `inbox/`. Le texte est écrit dans le brain courant.
+- Aucun audio n'est envoyé à un service externe : compatible avec les brains `forbidden`. L'audio brut est supprimé après transcription (option conservée par brain).
+- Contraintes : autorisation micro et reconnaissance vocale macOS à accorder ; langues et modèles on-device à vérifier (français) ; qualité variable sur le vocabulaire technique. **[À VALIDER : version de macOS, qualité en français]**
+- Hors périmètre v1 : transcription automatique des réunions en visio.
 
 ## 7. Fonctionnalités par cas d'usage
 
@@ -199,6 +212,7 @@ Règles :
 - **Politique** : module central qui décide moteur, connecteurs et anonymisation ; tous les chemins (UI, planificateur, CLI) passent par lui.
 - **Index** : SQLite par brain (FTS5 + embeddings locaux), reconstruit depuis les fichiers.
 - **Frontend** : SPA légère servie par le backend.
+- **Transcription** : utilitaire Swift (Apple Speech on-device), appelé par le backend, résultat écrit dans le brain actif.
 
 ## 10. Exigences non fonctionnelles
 
@@ -228,12 +242,13 @@ Règles :
 
 ## 13. Questions ouvertes
 
-1. Quel modèle Ollama pour `forbidden` (qualité vs RAM de ton Mac) ? Quelle puce et quelle RAM ?
-2. Les collègues EM ont-ils accès à une partie de `agency` (partage entre personnes) ?
-3. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
-4. Les comptes dédiés par client existent-ils déjà (mail/agenda/Drive), ou seulement le compte agence ?
-5. Niveau de confiance acceptable pour le filtrage par libellés sur le compte agence (§5) ?
-6. Les clients exigent-ils plus que l'anonymisation pour `restricted` (§4.2) ?
+1. Quel modèle Ollama (classe 7-8 B) pour `forbidden` ? À benchmarker sur 16 Go ; la qualité en français est suffisante pour les notes RH ?
+2. Version de macOS et qualité d'Apple Speech en français sur le vocabulaire technique ?
+3. Les collègues EM ont-ils accès à une partie de `agency` (partage entre personnes) ?
+4. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
+5. Quels clients ont aujourd'hui dit oui ou non aux connecteurs (`client_approval`) ? Lesquels sont à demander ?
+6. Niveau de confiance acceptable pour le filtrage par libellés sur le compte entreprise (§5) ?
+7. Les clients exigent-ils plus que l'anonymisation pour `restricted` (§4.2) ?
 
 ## 14. Décisions prises
 
@@ -244,3 +259,6 @@ Règles :
 - Web UI locale ; backend TypeScript.
 - Markdown + SQLite par brain ; chiffrement par volume APFS.
 - Connecteurs en mode mixte.
+- Connecteurs Claude utilisables dans `sbx` via le compte entreprise ; accord client par brain (`client_approval`).
+- Cible : MacBook Pro M2 16 Go ; modèle local 7-8 B quantifié.
+- Apple Speech on-device pour la transcription, sur l'hôte.
