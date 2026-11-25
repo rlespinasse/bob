@@ -1,24 +1,24 @@
 # SPEC — Bob : second brains cloisonnés pour un EM de prestataires
 
-> Statut : brouillon v0.6 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
+> Statut : brouillon v0.7 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
 
 ## 1. Contexte et objectifs
 
 Romain est prestataire informatique et Engineering Manager d'une équipe de consultants, chacun en mission chez un client (missions longues ou courtes). Il travaille aussi avec ses collègues au sein de l'agence.
 
-Il utilise Claude Code et opencode (installés en local) ainsi que les connecteurs Claude (mail, agenda, Drive). Les données de chaque client doivent rester séparées. Certaines exigent des traitements de sécurité.
+Il utilise opencode et Claude Code (installés en local) ainsi que les connecteurs Claude (mail, agenda, Drive). Il a déjà expérimenté un proxy de pseudonymisation, `privacy-llm-proxy`, dont Bob s'inspire (§4.1). Les données de chaque client doivent rester séparées. Certaines exigent des traitements de sécurité.
 
 **Bob** est une application locale (web UI sur `localhost`) qui :
 
 1. gère un *second brain* par client, isolé des autres ;
-2. lance Claude Code dans un sandbox dédié au brain, avec les connecteurs choisis ;
+2. lance l'agent (opencode en v1) dans un sandbox dédié au brain, avec les connecteurs choisis ;
 3. fait passer **tout** le trafic LLM par un proxy d'anonymisation local, réglé selon le niveau de sensibilité du brain ;
 4. couvre quatre usages : suivi des consultants, veille client/mission, briefing quotidien, pipeline commercial.
 
 ### Hors périmètre (v1)
 
 - Hébergement distant, multi-utilisateur, synchronisation cloud des brains.
-- Développement d'un nouvel agent IA : Bob orchestre Claude Code, il ne le remplace pas.
+- Développement d'un nouvel agent IA ou d'un nouveau proxy : Bob orchestre opencode/Claude Code ; le proxy est une brique à choisir (§4.1).
 - Modèle de langage local (Ollama) : écarté, remplacé par Claude derrière le proxy d'anonymisation.
 - Application desktop native.
 - Support hors macOS (cible unique : macOS, Apple Silicon).
@@ -28,7 +28,7 @@ Il utilise Claude Code et opencode (installés en local) ainsi que les connecteu
 - **Local d'abord** : les données restent sur la machine ; seul le trafic LLM sort, **toujours** via le proxy d'anonymisation.
 - **Cloisonnement par construction** : un brain actif à la fois par session, jamais de contexte croisé entre clients.
 - **Fichiers lisibles** : le contenu reste en Markdown, exploitable sans Bob.
-- **Aucun agent hors sandbox** : tout agent (Claude Code) tourne dans un Docker Sandbox (`sbx`, microVM) dédié au brain.
+- **Aucun agent hors sandbox** : tout agent (opencode, Claude Code) tourne dans un Docker Sandbox (`sbx`, microVM) dédié au brain.
 - **Refus par défaut** : en cas de doute sur le niveau, Bob applique le profil le plus strict et demande.
 
 ## 3. Modèle de données
@@ -67,7 +67,7 @@ Règle : une information RH sur un consultant vit dans `team`, jamais dans `clie
 name: acme
 kind: client            # client | team | agency | personal
 sensitivity: restricted # open | restricted | forbidden
-engine: claude-code
+engine: opencode        # v1 ; claude-code possible plus tard (§6)
 proxy:
   profile: strict       # secrets | standard | strict (dérivé du niveau, ajustable)
 sandbox:
@@ -97,24 +97,54 @@ Trois niveaux, appliqués au **brain entier**. Le proxy d'anonymisation est **to
 | `restricted` (défaut) | `standard` ou `strict` | `standard` : secrets, e-mails, téléphones. `strict` : + personnes, noms de client, organisations, pseudonymisés par jetons stables. |
 | `forbidden` | — | **Aucun appel LLM.** Agent désactivé ; Bob ne fait que stockage, recherche, transcription locale. |
 
-Décisions : tout brain client démarre en `restricted/strict` jusqu'à classification explicite. `team` (données RH) = `restricted/strict` **[À VALIDER : avant, `team` était `forbidden` grâce au modèle local ; sans modèle local, `forbidden` signifie plus d'IA du tout sur les 1:1]**.
+Décisions : tout brain client démarre en `restricted/strict` jusqu'à classification explicite. `team` (données RH) = `restricted/strict` (confirmé : sans modèle local, `forbidden` voudrait dire aucune IA sur les 1:1). Romain choisit lui-même le bon niveau au bon moment, dans le cadre de son entreprise : Bob n'impose pas de politique client et n'a rien à garantir à un tiers.
 
 ### 4.1 Proxy d'anonymisation (systématique)
 
-- Service local de Bob, interposé entre Claude Code (dans le sandbox) et l'API Anthropic. Claude Code est pointé vers le proxy (`ANTHROPIC_BASE_URL`) ; le sandbox n'a **aucune autre route** vers l'API (politique réseau `deny-all` + autorisation du seul proxy).
-- Requêtes sortantes : le proxy remplace les valeurs sensibles par des jetons stables avant envoi. Cela couvre messages, résultats d'outils et fichiers lus.
-- Réponses entrantes : le proxy réhydrate les jetons, y compris dans les appels d'outils (chemins, commandes), pour que l'agent agisse sur les vraies valeurs dans le sandbox.
-- Flux en streaming (SSE) géré ; mapping déterministe par brain pour que l'historique renvoyé à chaque tour reste cohérent.
-- Le changement de niveau ou de profil est journalisé et demande confirmation.
+Le proxy est une brique **remplaçable**. `privacy-llm-proxy` (Python, v0.2.0, dépôt local de Romain) sert de **référence et d'inspiration** : Bob peut le réutiliser, le faire évoluer ou écrire le sien. Ses choix sont donc **challengés** ci-dessous, pas repris par défaut. Décision à prendre au prototype (M2).
+
+Ce que la référence fait déjà (testée dans un autre contexte avec opencode) :
+
+- Écoute sur `127.0.0.1:8000`, expose `POST /v1/chat/completions` (format OpenAI) et relaie vers l'amont (`UPSTREAM_BASE_URL`), ici la passerelle LLM de l'entreprise qui relaie vers un modèle Claude.
+- Données personnelles : jetons réversibles `[[ENTITY_TYPE_N]]`, stables dans une session ; secrets : `[REDACTED_SECRET]`, irréversible.
+- Mapping **en RAM** uniquement, expiration après 30 min d'inactivité ; échec de détection = requête bloquée (jamais d'envoi en clair).
+- Détection spaCy `fr_core_news_lg`, liste d'exclusion (`EXCLUDE_TERMS`), blocage optionnel des termes sensibles (`BLOCK_SENSITIVE`), jeton local, tableau de bord à compteurs sans contenu.
+
+Exigences pour Bob, quelle que soit l'implémentation :
+
+- **Session = brain** : l'en-tête `x-session-id` (`SESSION_HEADERS`) porte l'identifiant du brain, pour que le mapping d'un client ne serve jamais à un autre. Une instance par brain actif est préférable (isolation de la RAM) **[À VALIDER : instance par brain ou unique]**.
+- **Profils** : `open` (secrets), `restricted/standard`, `restricted/strict` à traduire en configuration du proxy (types d'entités, `EXCLUDE_TERMS`) ; à confirmer ce que le proxy permet déjà.
+- **Accès depuis le sandbox** : `host.docker.internal:8000`, autorisé par `sbx policy allow network localhost:8000` ; le jeton local sert d'authentification côté agent.
+- **Compteurs** : le tableau de bord du proxy alimente l'audit de Bob (volumes masqués, blocages), sans valeurs.
+- Le mapping n'étant qu'en RAM, il n'y a pas de table de jetons à chiffrer sur disque. Après expiration (30 min), les jetons d'un tour ancien ne sont plus restituables : à gérer dans les sessions longues **[À VALIDER : TTL configurable, `TTL_SESSION`]**.
+
+Écarts de la référence (voir §6) :
+
+- Le proxy ne parle que le **format OpenAI** et ne convertit pas les formats : Claude Code (format Anthropic) n'est pas utilisable tel quel.
+- La restitution n'est **pas en streaming** : à mesurer sur l'expérience de l'agent, ajouter le streaming si nécessaire.
+- Le proxy n'a pas été conçu pour réhydrater les arguments d'appels d'outils **[À VALIDER : comportement sur `tool_calls`]**.
+- Limites déjà documentées : détection non exhaustive ; jeton local fixe accepté par tout processus local ; la base de sessions de l'agent peut contenir des valeurs restaurées en clair (elle doit donc vivre dans le brain chiffré).
+
+Points à challenger :
+
+| Choix de la référence | Question |
+|---|---|
+| Python + spaCy, service séparé | Garder (bonne détection du français) ou tout en TypeScript (une seule pile, mais détection plus faible) ? |
+| Format OpenAI uniquement | Ajouter le format Anthropic pour Claude Code, ou passer par une conversion tierce ? |
+| Restitution non streamée | Acceptable pour un agent interactif ? Sinon streaming avec réhydratation au fil de l'eau (jetons coupés entre deux morceaux). |
+| Mapping en RAM, TTL 30 min | Convient à la sécurité, mais casse les sessions longues et les reprises. Alternative : mapping persisté dans le volume chiffré du brain. |
+| Jeton local fixe | Un jeton par brain et par session, éventuellement lié au sandbox. |
+| Détection par modèle NER seul | Compléter par des listes propres au brain (consultants, client, projets) pour un meilleur rappel. |
+| Proxy générique | Intégrer l'audit, les profils par niveau et la session = brain en natif. |
 
 ### 4.2 Règles d'anonymisation
 
-- Détection locale : personnes (liste des consultants et contacts du brain), e-mails, téléphones, noms de client, secrets (clés, tokens, mots de passe, motifs `.env`).
-- Jetons stables (`[PERSONNE_3]`, `[CLIENT]`) ; table de correspondance stockée dans le brain, chiffrée avec lui.
+- Détection locale (spaCy français + règles) : personnes, lieux, e-mails, téléphones, IBAN, secrets (clés, tokens, mots de passe). Noms de client et consultants du brain à ajouter via la configuration **[À VALIDER : mécanisme d'entités personnalisées]**.
+- Jetons stables par session (`[[PERSON_3]]`), table en RAM dans le proxy.
 - Les secrets sont **supprimés** (non pseudonymisés) et jamais réhydratés.
-- `allowlist` pour éviter de masquer des termes publics (technologies, produits).
-- Limites connues : l'anonymisation de texte libre est imparfaite (contexte déductible, noms non listés) ; elle réduit le risque sans remplacer l'accord du client. Les jetons peuvent dégrader la qualité (noms dans des chemins, jeux de mots) : à mesurer.
-- **Angle mort : les connecteurs.** Les données lues via les connecteurs Claude (mail, agenda, Drive) peuvent être récupérées côté Anthropic sans traverser le proxy local **[À VALIDER : trajet exact des résultats de connecteurs]**. Pour un brain où l'anonymisation compte, ne pas activer de connecteur ou accepter cette limite.
+- `allowlist` (= `EXCLUDE_TERMS`) pour éviter de masquer des termes publics (technologies, produits).
+- Limites connues (voir aussi §4.1) : l'anonymisation de texte libre est imparfaite (contexte déductible, noms non listés) ; elle réduit le risque sans remplacer l'accord du client. Les jetons peuvent dégrader la qualité (noms dans des chemins, jeux de mots) : à mesurer.
+- **Angle mort : les connecteurs.** Les données lues via les connecteurs Claude peuvent être récupérées côté Anthropic sans traverser le proxy local. C'est à Romain de décider, brain par brain, s'il active un connecteur ; Bob se contente de le lui rappeler.
 
 ### 4.3 Chiffrement au repos
 
@@ -135,7 +165,7 @@ Mode **mixte** :
 
 - **Compte entreprise Claude** (seul compte aujourd'hui) : connecteurs mail, agenda et Drive utilisables depuis les agents dans `sbx`. Bob filtre par libellés (mail), calendriers dédiés et dossiers Drive.
 - **Configuration par client, à ta main** : Bob n'impose aucun connecteur et n'en bloque aucun. Tu choisis par brain lesquels sont activés (`enabled`) et notes l'accord du client si besoin (`note`, mémo libre). Sans connecteur, l'import manuel dans `inbox/` reste possible.
-- Seul garde-fou : activer un connecteur sur un brain `forbidden` déclenche un avertissement avec confirmation (le niveau implique zéro appel LLM), et sur un brain `restricted/strict` un rappel de l'angle mort du proxy (§4.2). Aucun refus.
+- Seul garde-fou : activer un connecteur sur un brain `forbidden` déclenche un avertissement avec confirmation (le niveau implique zéro appel LLM), et sur un brain `restricted/strict` un rappel de l'angle mort du proxy (§4.2). Aucun refus : la responsabilité du bon niveau est celle de Romain, dans le cadre de son entreprise.
 - **Comptes/profils dédiés** : possibles plus tard pour des clients exigeant un compte séparé ; hors v1.
 
 Règles :
@@ -148,20 +178,22 @@ Règles :
 
 ## 6. Moteur IA et sandboxes
 
-Moteur v1 : **Claude Code** via `sbx run claude <brain>` dans le sandbox du brain, avec `CLAUDE.md`, permissions et connecteurs du brain, et le proxy d'anonymisation (§4.1). opencode reste possible plus tard, derrière le même proxy **[hors v1]**.
+- **v1 : opencode**, configuré avec `baseURL = http://host.docker.internal:8000/v1` et le jeton local du proxy, dans le sandbox du brain ; contexte via `AGENTS.md`/instructions du brain. C'est le chemin déjà testé avec la référence.
+- **Claude Code** : possible une fois le proxy capable du format Anthropic (`/v1/messages`) ou d'une conversion en amont. Jalon dédié, après le prototype **[À VALIDER : conversion dans le proxy ou passerelle tierce]**.
+- Les connecteurs Claude (mail, agenda, Drive) sont fournis par Claude Code avec le compte entreprise ; avec opencode, ils ne sont pas disponibles tels quels. Équivalent en v1 : import manuel dans `inbox/` ou serveurs MCP côté opencode **[À VALIDER]**.
 
 ### 6.1 Docker Sandboxes (`sbx`)
 
 - **Un sandbox par brain** (microVM). Le brain est le workspace principal ; autres montages en `:ro` seulement. Mode `clone` possible pour travailler sur une copie privée.
-- **Politique réseau** par sandbox : `deny-all` par défaut ; `sbx policy allow network` pour le proxy local (via `host.docker.internal`, traduit en `localhost:<port>` par le proxy du sandbox) et pour les destinations des connecteurs activés.
-- **Secrets** : la clé/compte Anthropic reste côté hôte et n'entre jamais dans la VM (`sbx secret set anthropic` ou détenue par le proxy de Bob) **[À VALIDER : comment l'injection de `sbx` se combine avec l'amont du proxy de Bob]**.
+- **Politique réseau** par sandbox : `deny-all` par défaut ; `sbx policy allow network localhost:8000` pour le proxy (accessible via `host.docker.internal`) et pour les destinations des connecteurs activés.
+- **Secrets** : `UPSTREAM_API_KEY` (clé de la passerelle) reste côté hôte, détenue par le proxy ; elle n'entre jamais dans la VM. L'agent ne reçoit que le jeton local du proxy. `sbx` est déjà installé ; l'interaction avec l'injection de secrets de `sbx` est **à tester** en prototype.
 - **Chiffrement** : le volume APFS du brain doit être monté **avant** le lancement du sandbox ; Bob arrête le sandbox avant de démonter/verrouiller.
 - Cycle de vie : création au premier lancement, arrêt à la fermeture ou au verrouillage, suppression à l'offboarding du client (avec le brain).
-- Pré-requis vérifiés au démarrage : Docker Sandboxes (`sbx`), Claude Code, proxy opérationnel. Sinon blocage avec message.
+- Pré-requis vérifiés au démarrage : Docker Sandboxes (`sbx`), opencode, proxy opérationnel (`GET /health`), clé de la passerelle présente. Sinon blocage avec message.
 
 ### 6.2 Ressources (MacBook Pro M2 16 Go)
 
-Aucun modèle local : la RAM sert à macOS, Docker, le proxy et la détection d'entités (détection par règles et listes ; un petit modèle NER local reste possible s'il tient en mémoire **[À VALIDER]**).
+Aucun modèle de langage local. La RAM sert à macOS, Docker, au proxy et au modèle spaCy `fr_core_news_lg` (détection d'entités), qui tient largement sur 16 Go.
 
 ### 6.3 Transcription vocale (Apple Speech, Anarlog)
 
@@ -170,7 +202,8 @@ Aucun modèle local : la RAM sert à macOS, Docker, le proxy et la détection d'
 - Flux : tu enregistres dans Anarlog → dans Bob, tu choisis la réunion et le **brain cible** → Bob lance l'export vers `inbox/` du brain → tri et résumé par l'agent (via le proxy).
 - Le cloisonnement se fait à l'import, par choix explicite du brain : Anarlog garde une seule base pour tous les clients.
 - Réglages Anarlog recommandés : transcription on-device, résumés IA **désactivés** (Bob les fait, via le proxy) pour qu'aucun contenu ne parte hors du contrôle de Bob.
-- Points à vérifier **[À VALIDER]** : support d'Apple Speech comme moteur de transcription dans Anarlog ; chiffrement de la base Anarlog (placer son dossier de données dans un volume chiffré, ou supprimer la réunion après export si la CLI le permet) ; stabilité de la CLI.
+- Apple Speech est déjà supporté par Anarlog et utilisé par Romain.
+- Points à vérifier **[À VALIDER]** : chiffrement de la base Anarlog (placer son dossier de données dans un volume chiffré, ou supprimer la réunion après export si la CLI le permet) ; stabilité de la CLI.
 - Intégration optionnelle côté agent : Anarlog propose un plugin/skill d'agent ; non retenu en v1 pour ne pas ouvrir au sandbox l'ensemble des réunions de tous les clients.
 - Hors périmètre v1 : import automatique sans choix du brain.
 
@@ -211,8 +244,8 @@ Aucun modèle local : la RAM sert à macOS, Docker, le proxy et la détection d'
 ## 9. Architecture (proposition)
 
 - **Backend local** : service unique en TypeScript (décision) exposant l'API de la UI, gérant brains, index SQLite, audit et politique.
-- **Proxy d'anonymisation** : module du backend (ou processus séparé) exposé en `localhost` aux sandboxes ; un profil par brain ; lui seul contient la table des jetons.
-- **Lanceur d'agents** : pilote la CLI `sbx` (création, politique réseau, run, arrêt) et attache un pty au sandbox du brain.
+- **Proxy d'anonymisation** : service séparé lancé et supervisé par le backend TypeScript ; implémentation à choisir (voir §4.1, référence : `privacy-llm-proxy`) ; un profil et une session par brain ; seul à détenir le mapping, en RAM.
+- **Lanceur d'agents** : pilote la CLI `sbx` et le proxy (création, politique réseau, run, arrêt) et attache un pty au sandbox du brain.
 - **Politique** : module central qui décide profil du proxy, connecteurs et réseau ; tous les chemins (UI, planificateur, CLI) passent par lui.
 - **Index** : SQLite par brain (FTS5 + embeddings locaux), reconstruit depuis les fichiers.
 - **Frontend** : SPA légère servie par le backend.
@@ -231,8 +264,8 @@ Aucun modèle local : la RAM sert à macOS, Docker, le proxy et la détection d'
 
 1. Créer un brain client avec niveau, profil du proxy et connecteurs ; avertissement si la configuration est incohérente (ex. connecteur sur `forbidden`).
 2. Ouvrir une session Claude Code sur un brain `open` : elle tourne dans un sandbox `sbx` dédié, seuls ses connecteurs sont actifs, aucun accès aux autres brains ni au reste du disque.
-3. Sur un brain `restricted/strict`, un texte contenant un nom de consultant et un secret arrive à l'API pseudonymisé/purgé (vérifié en capturant le trafic sortant du proxy) et revient réhydraté, y compris dans les appels d'outils ; les secrets ne reviennent jamais.
-4. Depuis un sandbox, toute connexion directe vers l'API Anthropic échoue ; seule la route via le proxy fonctionne. Sur un brain `forbidden`, aucun agent ne démarre.
+3. Sur un brain `restricted/strict`, un texte contenant un nom de consultant et un secret arrive à l'amont pseudonymisé/purgé (vérifié en capturant le trafic sortant du proxy) et revient réhydraté, y compris dans les appels d'outils ; les secrets ne reviennent jamais. Le mapping d'un brain n'est jamais utilisé par un autre.
+4. Depuis un sandbox, toute connexion directe vers un fournisseur LLM échoue ; seule la route via le proxy fonctionne. Sur un brain `forbidden`, aucun agent ne démarre.
 5. Un brain chiffré verrouillé est illisible (fichiers, index, table d'anonymisation) et se verrouille après inactivité.
 6. L'audit enregistre chaque ouverture, changement de niveau et blocage, sans contenu.
 7. Le briefing quotidien n'affiche aucun contenu croisé entre brains.
@@ -241,25 +274,29 @@ Aucun modèle local : la RAM sert à macOS, Docker, le proxy et la détection d'
 ## 12. Jalons proposés
 
 1. **M1 — Socle** : structure des brains, `brain.yaml`, git par brain, UI de liste, audit.
-2. **M2 — Lanceur** : Claude Code dans `sbx`, politique réseau, cloisonnement des connecteurs.
-3. **M3 — Sécurité** : proxy d'anonymisation (prototype tôt, c'est le risque principal), chiffrement, verrouillage.
+2. **M2 — Prototype proxy + sandbox (en premier)** : opencode dans `sbx` → proxy (référence existante pour démarrer) → passerelle LLM ; trancher réutiliser / adapter / réécrire ; tester secrets `sbx`, session par brain, `tool_calls`, latence, TTL.
+3. **M3 — Sécurité** : profils du proxy, chiffrement des brains, verrouillage, audit depuis les compteurs du proxy.
 4. **M4 — Usages** : suivi consultants, veille, inbox, import Anarlog, index/recherche.
 5. **M5 — Briefing et pipeline** : briefing planifié, vue agence.
+6. **M6 — Claude Code** : format Anthropic (conversion ou extension du proxy), connecteurs Claude.
 
 ## 13. Questions ouvertes
 
-1. `team` (RH) : accepté en `restricted/strict` via proxy, ou `forbidden` (pas d'IA sur les 1:1) ?
-2. Trajet des données des connecteurs Claude : passent-elles par le proxy local, ou uniquement côté Anthropic ?
-3. Anarlog : support d'Apple Speech, chiffrement de sa base, suppression après export ?
-4. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
-5. Niveau de confiance acceptable pour le filtrage par libellés sur le compte entreprise (§5) ?
-6. Les clients exigent-ils plus que l'anonymisation pour `restricted` (§4.2) ? Ton compte entreprise Claude fixe-t-il déjà des garanties (rétention, entraînement) à citer aux clients ?
-7. Interaction entre l'injection de secrets de `sbx` et un proxy amont (§6.1).
+1. Claude Code vs opencode : v1 en opencode (chemin éprouvé) te convient-il, avec les connecteurs Claude reportés à M6 ?
+2. Proxy : réutiliser, adapter ou réécrire (tableau §4.1) ? Instance par brain ou unique ? Profils `open`/`standard`/`strict` et entités personnalisées (noms de client, consultants) : ce que le proxy permet déjà ?
+3. Comportement du proxy sur `tool_calls` et sans streaming, avec un agent en usage réel ?
+4. Interaction entre l'injection de secrets de `sbx` et le proxy (à tester au prototype).
+5. Chiffrement et suppression côté Anarlog après export.
+6. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
+7. Niveau de confiance acceptable pour le filtrage par libellés sur le compte entreprise (§5) ?
 
 ## 14. Décisions prises
 
 - macOS uniquement ; agents dans Docker Sandboxes (un sandbox par brain).
-- Pas de modèle local : Claude derrière un proxy d'anonymisation systématique.
+- Pas de modèle local : Claude (via la passerelle LLM de l'entreprise) derrière un proxy d'anonymisation systématique, dont `privacy-llm-proxy` sert d'inspiration (réutiliser, adapter ou réécrire : tranché au prototype).
+- v1 : opencode ; Claude Code en M6.
+- `team` en `restricted/strict`. Romain choisit lui-même le bon niveau, dans le cadre de son entreprise ; Bob n'impose ni ne promet rien à un tiers.
+- Apple Speech supporté par Anarlog (déjà utilisé).
 - Un brain par client ; `team`, `agency`, `personal` à part.
 - Trois niveaux qui règlent le proxy : `open` (secrets), `restricted` (standard/strict), `forbidden` (aucun LLM).
 - Aucun client n'interdit l'IA externe aujourd'hui : départ en `restricted`.
