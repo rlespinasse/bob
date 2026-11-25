@@ -1,6 +1,6 @@
 # SPEC — Bob : second brains cloisonnés pour un EM de prestataires
 
-> Statut : brouillon v0.10 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
+> Statut : brouillon v0.11 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
 
 ## 1. Contexte et objectifs
 
@@ -245,10 +245,31 @@ Aucun modèle de langage local. La RAM sert à macOS, Docker, au proxy et au mod
 - **Intégration Anarlog** : Anarlog est une app de notes de réunion locale (capture audio système sans bot, transcription en direct, stockage SQLite). Elle expose une CLI : `anarlog meetings export MEETING_ID --format markdown|json --output <fichier>`.
 - Flux : tu enregistres dans Anarlog → dans Bob, tu choisis la réunion et le **brain cible** → Bob lance l'export vers `inbox/` du brain → tri et résumé par l'agent (via le proxy).
 - Le cloisonnement se fait à l'import, par choix explicite du brain : Anarlog garde une seule base pour tous les clients.
-- Réglages Anarlog recommandés : transcription on-device, résumés IA **désactivés** (Bob les fait, via le proxy) pour qu'aucun contenu ne parte hors du contrôle de Bob.
+- Réglages Anarlog recommandés : transcription on-device (Apple Speech, déjà utilisé), résumés IA **désactivés** (Bob les fait, via le proxy), webhooks et connecteurs Cloud **désactivés**.
 - Apple Speech est déjà supporté par Anarlog et utilisé par Romain.
-- Points à vérifier **[À VALIDER]** : chiffrement de la base Anarlog (placer son dossier de données dans un volume chiffré, ou supprimer la réunion après export si la CLI le permet) ; stabilité de la CLI.
-- Intégration optionnelle côté agent : Anarlog propose un plugin/skill d'agent ; non retenu en v1 pour ne pas ouvrir au sandbox l'ensemble des réunions de tous les clients.
+
+**Vérifié sur la CLI `anarlog` 1.4.35 (test en lecture seule)**
+
+| Besoin de Bob | Commande / constat |
+|---|---|
+| Lister | `anarlog --json --source local meetings list [-q TEXTE] [--folder CHEMIN] [--limit N]` ; pas de filtre par date ni par tag, tri côté Bob sur `created_at` |
+| Dossiers | `anarlog --json meetings folders` ; un dossier Anarlog par client est une bonne piste de correspondance avec les brains |
+| Exporter | `anarlog --source local meetings export ID --format json -o <fichier>` (et `--format markdown`) ; refuse d'écraser sans `--force` (code 4) |
+| Codes de sortie | 0 ok, 1 erreur, 2 réunion introuvable, 3 base introuvable, 4 fichier existant |
+| App fermée | Lectures possibles (base ouverte en lecture seule, déduit de la doc) ; `import` exige l'app ouverte, `delete` exige l'app fermée |
+| Supprimer après export | `anarlog meetings delete ID --if-export-sha256 <SHA> --require-transcription-complete` : SHA-256 de l'export JSON (calculer sur le fichier `-o`), transcript terminé, app fermée ; suppression définitive |
+
+Contenu des exports :
+- **JSON** : identifiants, dates ISO 8601, `folder_path`, note, résumés, participants, actions, transcript avec mots horodatés (canal micro ou système), `attachments` (références, pas l'audio). C'est le format de référence : il porte les horodatages.
+- **Markdown** : titre, notes, résumé IA s'il existe, participants, transcript par paragraphes `Speaker N:`, sans frontmatter ni horodatage. Les locuteurs distants ne sont pas nommés.
+- Bob exporte en JSON puis génère le markdown de l'inbox (avec frontmatter, sans les résumés IA d'Anarlog).
+
+Sécurité des données d'Anarlog :
+- La base SQLite et les enregistrements audio sont **en clair** sur disque (permissions 644), pour tous les clients ; le chiffrement de bout en bout d'Anarlog ne concerne que sa synchronisation Cloud.
+- Mitigations : FileVault ; réduire la rétention audio (réglage de l'app) ; déplacer le dossier de données dans un volume chiffré avec lien symbolique (**à tester**, car `delete` et `hold-*` refusent de suivre les liens dans `sessions/`) ; supprimer la réunion après export.
+- **Le dossier de données d'Anarlog doit être invisible des sandboxes de Bob** (ne jamais monter le `$HOME`).
+- Le plugin/skill d'agent d'Anarlog et son serveur MCP donnent accès à **toutes** les réunions sans filtre par client : non retenus en v1. Webhooks et import audio : non retenus (fuite possible hors du contrôle de Bob).
+- Épingler la version de la CLI et vérifier `schema_version` dans les sorties JSON.
 - Hors périmètre v1 : import automatique sans choix du brain.
 
 ## 7. Fonctionnalités par cas d'usage
@@ -331,7 +352,7 @@ Aucun modèle de langage local. La RAM sert à macOS, Docker, au proxy et au mod
 3. Verrou de détection unique : effet sur les sous-agents parallèles d'opencode (à mesurer) ; 445 Mo par instance acceptable si une instance par brain ?
 4. Anglais (§4.5c) : RAM, latence et rappel avec les deux modèles ; instance par brain toujours acceptable ?
 5. Interaction entre l'injection de secrets de `sbx` et le proxy (à tester au prototype).
-6. Chiffrement et suppression côté Anarlog après export.
+6. Dossier de données d'Anarlog : volume chiffré avec lien symbolique, ou FileVault et rétention courte suffisent ? Un dossier Anarlog par client ?
 7. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
 8. Niveau de confiance acceptable pour le filtrage par libellés sur le compte entreprise (§5) ?
 
