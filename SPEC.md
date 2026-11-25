@@ -1,6 +1,6 @@
 # SPEC — Bob : second brains cloisonnés pour un EM de prestataires
 
-> Statut : brouillon v0.4 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
+> Statut : brouillon v0.5 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
 
 ## 1. Contexte et objectifs
 
@@ -38,7 +38,7 @@ Il utilise Claude Code et opencode (installés en local) ainsi que les connecteu
 |---|---|---|
 | `client/<slug>` | Un brain par client ; missions en sous-dossiers | contexte, décisions, risques, comptes rendus, consultants affectés |
 | `team` | Équipe d'EM (transverse, **données RH**) | 1:1, objectifs, évaluations, compétences, fins de mission |
-| `agency` | Vie d'agence et pipeline | staffing, renouvellements, opportunités, collègues EM |
+| `agency` | Vue personnelle de Romain au niveau agence (non partagée) | staffing, renouvellements, opportunités, notes d'agence |
 | `personal` | Perso/organisation | notes de travail, formation |
 
 Règle : une information RH sur un consultant vit dans `team`, jamais dans `client/*`. Le brain client ne contient que ce qui est utile à la mission (rôle, périmètre, contact).
@@ -76,8 +76,9 @@ sandbox:
   extra_mounts: []      # chemins en :ro uniquement
 encryption: true
 connectors:
-  client_approval: approved  # approved | refused | pending ; refused/pending => connecteurs coupés
-  account: agency       # compte entreprise Claude (seul compte pour l'instant) ou profil dédié
+  enabled: [mail, calendar, drive]  # choix de Romain, vide par défaut ; rien n'est imposé
+  note: "accord client : oui"       # mémo libre, sans effet technique
+  account: agency       # compte entreprise Claude (seul compte pour l'instant)
   mail:     { labels: ["ACME"] }
   calendar: { calendars: ["ACME"] }
   drive:    { folders: ["<id dossier>"] }
@@ -127,7 +128,8 @@ Bob choisit le moteur d'après `sensitivity`. L'utilisateur ne peut pas lancer C
 Mode **mixte** :
 
 - **Compte entreprise Claude** (seul compte aujourd'hui) : connecteurs mail, agenda et Drive utilisables depuis les agents dans `sbx`. Bob filtre par libellés (mail), calendriers dédiés et dossiers Drive.
-- **Accord client** : l'usage des connecteurs sur les données d'un client dépend de son accord (cas réels : certains oui, d'autres non). Statut `client_approval` par brain ; `pending` et `refused` coupent les connecteurs et passent par l'import manuel dans `inbox/`.
+- **Configuration par client, à ta main** : Bob n'impose aucun connecteur et n'en bloque aucun. Tu choisis par brain lesquels sont activés (`enabled`) et notes l'accord du client si besoin (`note`, mémo libre). Sans connecteur, l'import manuel dans `inbox/` reste possible.
+- Seule garde-fou : activer un connecteur sur un brain `forbidden` déclenche un avertissement avec confirmation (le niveau implique normalement zéro réseau), pas un refus.
 - **Comptes/profils dédiés** : possibles plus tard pour des clients exigeant un compte séparé ; hors v1.
 
 Règles :
@@ -136,7 +138,7 @@ Règles :
 - Les connecteurs cloud sont coupés pour les brains `forbidden`. Pour eux, import manuel dans `inbox/` (export mail, ICS, fichiers).
 - Le filtrage par libellé ne vaut pas isolation forte : une requête mal cadrée peut lire hors périmètre. Mitigation : consigne dans `CLAUDE.md` du brain et vérification dans l'audit. **[À VALIDER : niveau de confiance acceptable pour les clients tolérants]**
 - Dans un sandbox, les serveurs MCP passent par la passerelle MCP de l'hôte (les serveurs stdio locaux tournent sur l'hôte, donc hors sandbox : à traiter comme intégrations de confiance). Les connecteurs Claude sont utilisables depuis un agent dans `sbx` avec le compte entreprise (confirmé par Romain).
-- La politique réseau du sandbox doit autoriser les destinations des connecteurs, uniquement pour les brains `client_approval: approved`.
+- La politique réseau du sandbox autorise les destinations des connecteurs uniquement pour les connecteurs activés sur ce brain.
 - Écriture (envoi de mail, création d'événement) : confirmation explicite à chaque action.
 
 ## 6. Moteurs IA et sandboxes
@@ -244,11 +246,9 @@ Règles :
 
 1. Quel modèle Ollama (classe 7-8 B) pour `forbidden` ? À benchmarker sur 16 Go ; la qualité en français est suffisante pour les notes RH ?
 2. Version de macOS et qualité d'Apple Speech en français sur le vocabulaire technique ?
-3. Les collègues EM ont-ils accès à une partie de `agency` (partage entre personnes) ?
-4. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
-5. Quels clients ont aujourd'hui dit oui ou non aux connecteurs (`client_approval`) ? Lesquels sont à demander ?
-6. Niveau de confiance acceptable pour le filtrage par libellés sur le compte entreprise (§5) ?
-7. Les clients exigent-ils plus que l'anonymisation pour `restricted` (§4.2) ?
+3. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
+4. Niveau de confiance acceptable pour le filtrage par libellés sur le compte entreprise (§5) ?
+5. Les clients exigent-ils plus que l'anonymisation pour `restricted` (§4.2) ?
 
 ## 14. Décisions prises
 
@@ -259,6 +259,7 @@ Règles :
 - Web UI locale ; backend TypeScript.
 - Markdown + SQLite par brain ; chiffrement par volume APFS.
 - Connecteurs en mode mixte.
-- Connecteurs Claude utilisables dans `sbx` via le compte entreprise ; accord client par brain (`client_approval`).
+- Connecteurs Claude utilisables dans `sbx` via le compte entreprise ; configurés par brain à ta main, rien d'imposé.
+- `agency` est personnel à Romain, non partagé.
 - Cible : MacBook Pro M2 16 Go ; modèle local 7-8 B quantifié.
 - Apple Speech on-device pour la transcription, sur l'hôte.
