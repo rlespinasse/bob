@@ -1,6 +1,6 @@
 # SPEC — Bob : second brains cloisonnés pour un EM de prestataires
 
-> Statut : brouillon v0.1 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
+> Statut : brouillon v0.2 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
 
 ## 1. Contexte et objectifs
 
@@ -88,7 +88,7 @@ Trois niveaux, appliqués au **brain entier**.
 | `restricted` | Claude Code **après anonymisation**, ou opencode | Pseudonymisation avant envoi au LLM, réhydratation locale de la réponse. |
 | `forbidden` | opencode + **modèle local uniquement** | Aucun appel réseau vers un LLM. Connecteurs cloud désactivés (ou lecture seule locale **[À VALIDER]**). |
 
-Par défaut : `team` = `forbidden` (données RH) **[À VALIDER]** ; un nouveau brain client démarre en `restricted` jusqu'à classification explicite.
+Décisions : `team` = `forbidden` (données RH). Aucun client n'interdit formellement l'IA externe aujourd'hui, mais par prudence tout brain client démarre en `restricted` jusqu'à classification explicite.
 
 ### 4.1 Routage des moteurs
 
@@ -104,7 +104,7 @@ Bob choisit le moteur d'après `sensitivity`. L'utilisateur ne peut pas lancer C
 
 ### 4.3 Chiffrement au repos
 
-- Brains `encryption: true` stockés dans un volume ou conteneur chiffré (candidats : `age`, volume APFS chiffré, `gocryptfs`) **[À VALIDER : outil]**.
+- Décision : un volume APFS chiffré (image disque) par brain, monté à la demande, mot de passe dans le Keychain macOS. Transparent pour les agents une fois monté.
 - Déverrouillage à la demande (mot de passe ou Keychain macOS), verrouillage automatique après inactivité (défaut 30 min).
 - L'index SQLite et la table d'anonymisation sont dans le brain chiffré.
 
@@ -173,7 +173,7 @@ Pré-requis détectés au démarrage : binaires installés, version, modèle loc
 
 ## 9. Architecture (proposition)
 
-- **Backend local** : service unique (Node/TypeScript ou Python **[À VALIDER]**) exposant l'API de la UI, gérant brains, index SQLite, audit, anonymisation, politique de routage.
+- **Backend local** : service unique en TypeScript (décision) exposant l'API de la UI, gérant brains, index SQLite, audit, anonymisation, politique de routage.
 - **Lanceur d'agents** : processus enfant dans un pty, avec variables d'environnement, répertoire de travail et permissions du brain.
 - **Politique** : module central qui décide moteur, connecteurs et anonymisation ; tous les chemins (UI, planificateur, CLI) passent par lui.
 - **Index** : SQLite par brain (FTS5 + embeddings locaux), reconstruit depuis les fichiers.
@@ -207,10 +207,18 @@ Pré-requis détectés au démarrage : binaires installés, version, modèle loc
 
 ## 13. Questions ouvertes
 
-1. Les contrats clients imposent-ils des règles précises (interdiction d'IA externe, localisation des données, durée de conservation) ? Lesquels sont `forbidden` aujourd'hui ?
-2. Modèle local pour opencode : lequel, et sur quelle machine (Apple Silicon, RAM) ?
-3. Outil de chiffrement préféré (`age`, `gocryptfs`, volume APFS) ?
-4. Langage du backend (TypeScript ou Python) ?
-5. Les données RH (`team`) sont-elles bien `forbidden` ? Les collègues EM ont-ils accès à une partie de `agency` (partage entre personnes) ?
-6. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
-7. Les comptes dédiés par client existent-ils déjà (mail/agenda/Drive), ou seulement le compte agence ?
+1. Modèle local pour opencode : lequel, et sur quelle machine (Apple Silicon, RAM) ?
+2. Les collègues EM ont-ils accès à une partie de `agency` (partage entre personnes) ?
+3. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
+4. Les comptes dédiés par client existent-ils déjà (mail/agenda/Drive), ou seulement le compte agence ?
+5. Niveau de confiance acceptable pour le filtrage par libellés sur le compte agence (§5) ?
+6. Les clients exigent-ils plus que l'anonymisation pour `restricted` (§4.2) ?
+
+## 14. Décisions prises
+
+- Un brain par client ; `team`, `agency`, `personal` à part.
+- Trois niveaux : `open`, `restricted`, `forbidden` ; `team` = `forbidden`.
+- Aucun client n'interdit l'IA externe aujourd'hui : départ en `restricted`.
+- Web UI locale ; backend TypeScript.
+- Markdown + SQLite par brain ; chiffrement par volume APFS.
+- Connecteurs en mode mixte.
