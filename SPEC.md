@@ -1,6 +1,6 @@
 # SPEC — Bob : second brains cloisonnés pour un EM de prestataires
 
-> Statut : brouillon v0.11 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
+> Statut : brouillon v0.12 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
 
 ## 1. Contexte et objectifs
 
@@ -228,12 +228,30 @@ Règles :
 
 ### 6.1 Docker Sandboxes (`sbx`)
 
-- **Un sandbox par brain** (microVM). Le brain est le workspace principal ; autres montages en `:ro` seulement. Mode `clone` possible pour travailler sur une copie privée.
-- **Politique réseau** par sandbox : `deny-all` par défaut ; `sbx policy allow network localhost:8000` pour le proxy (accessible via `host.docker.internal`) et pour les destinations des connecteurs activés.
-- **Secrets** : `UPSTREAM_API_KEY` (clé de la passerelle) reste côté hôte, détenue par le proxy ; elle n'entre jamais dans la VM. L'agent ne reçoit que le jeton local du proxy. `sbx` est déjà installé ; l'interaction avec l'injection de secrets de `sbx` est **à tester** en prototype.
+Validé par prototype (sbx 0.54.0, opencode 2.4.1, faux proxy et faux amont locaux, sans clé réelle) :
+
+- **Un sandbox par brain** (microVM) : `sbx create --name brain-<x> opencode <workspace> [<docs>:ro]`, exécution non interactive par `sbx exec -w <workspace> brain-<x> opencode run "<prompt>"`. Le premier `create` prend environ 85 s (image), les suivants environ 3 s.
+- **Cloisonnement vérifié** : un second sandbox ne voit pas le workspace du premier ; un montage `:ro` est réellement en lecture seule (même avec `sudo`) ; aucun accès au disque hôte hors des dossiers montés. Le workspace est monté au **même chemin** que sur l'hôte (un `:CIBLE` explicite est possible).
+- **Réseau** : `sbx policy allow network localhost:<port>` (règle sur `localhost`, pas sur `host.docker.internal`) ; l'agent joint alors `host.docker.internal:<port>`. Toute autre destination répond 403 « Approval required » et crée une approbation en attente que l'agent ne peut pas valider.
+- **Secrets** : les secrets de service `sbx` (anthropic, openai…) ne sont injectés que vers les hôtes de leur fournisseur ; vers le proxy local, seule une sentinelle (`proxy-managed`) transite, donc **pas de fuite vers le proxy**. Le jeton local du proxy est fourni sans être exposé à la VM : `sbx secret set-custom --sandbox brain-<x> --host localhost --host host.docker.internal --placeholder 'bobtok-{rand}' --value-stdin`, la VM ne voit que le placeholder, remplacé par le vrai jeton dans les **en-têtes** (pas dans le corps). La clé amont n'existe que dans le processus du proxy sur l'hôte.
+- **Configuration opencode** : fournisseur `@ai-sdk/openai-compatible` avec `baseURL = http://host.docker.internal:<port>/v1` et `apiKey` = le placeholder, copiée par `sbx cp opencode.json brain-<x>:/home/agent/.config/opencode/opencode.json`. Le proxy doit répondre en **SSE** quand `stream: true`. Les en-têtes `X-Opencode-Session`, `X-Opencode-Project` et `Traceparent` sont utilisables pour la session du proxy et l'audit.
+- **Cycle de vie** : `sbx stop` conserve workspace et config dans la VM ; `sbx rm -f` (le `--force` est obligatoire en non interactif) supprime VM, volumes, secrets et règles scopés au sandbox. Restent sur l'hôte : les fichiers du workspace (y compris ceux écrits par l'agent) et l'image (environ 1,25 Go, récupérable).
+- Audit : `sbx policy log <sandbox>` (connexions autorisées et refusées), `sbx policy check network <hôte:port>`.
+
+Écarts avec la politique réseau décrite plus haut :
+
+1. **Le « deny-all par défaut » n'est pas garanti.** La politique **globale** de l'hôte, qui appartient à Romain, est permissive (nombreuses autorisations, dont les API des fournisseurs IA). Un `--deny-network '**'` par sandbox est inutilisable : un deny l'emporte toujours et masque l'autorisation du proxy. Bob doit **vérifier** (`sbx policy check network`) que les API LLM directes sont refusées avant de lancer un brain, et proposer un `deny-all` global (`sbx policy init deny-all`) plutôt que de le modifier lui-même **[À VALIDER par Romain : politique globale]**.
+2. Au démarrage, opencode contacte un service externe de catalogue de modèles : à neutraliser (option à identifier) ou à autoriser en connaissance de cause.
+3. `--env` ne s'applique pas à un sandbox déjà créé : fournir le placeholder à la création (`-e`) ou le mettre en dur dans `opencode.json`.
+
+Risques :
+- L'utilisateur de la VM est `sudo` : l'agent est root dans sa VM (sans effet sur les montages `:ro`), et peut modifier sa propre config opencode.
+- Politique globale permissive : un agent compromis pourrait exfiltrer vers une API IA autorisée, avec un secret de service injecté. D'où l'écart 1.
+- Les approbations réseau en attente peuvent être validées par erreur par Romain : afficher et auditer chaque demande dans la web UI de Bob.
+- Les fichiers écrits par l'agent dans le workspace sont des données non fiables côté hôte.
+- Mises à jour de `sbx` : épingler la version testée.
 - **Chiffrement** : le volume APFS du brain doit être monté **avant** le lancement du sandbox ; Bob arrête le sandbox avant de démonter/verrouiller.
-- Cycle de vie : création au premier lancement, arrêt à la fermeture ou au verrouillage, suppression à l'offboarding du client (avec le brain).
-- Pré-requis vérifiés au démarrage : Docker Sandboxes (`sbx`), opencode, proxy opérationnel (`GET /health`), clé de la passerelle présente. Sinon blocage avec message.
+- Pré-requis vérifiés au démarrage : `sbx`, opencode, proxy opérationnel (`GET /health`), clé de la passerelle présente, politique globale conforme.
 
 ### 6.2 Ressources (MacBook Pro M2 16 Go)
 
@@ -351,7 +369,7 @@ Sécurité des données d'Anarlog :
 2. Proxy : réutiliser, adapter ou réécrire (tableau §4.1) ? Instance par brain ou unique ? Profils `open`/`standard`/`strict` et entités personnalisées (noms de client, consultants) : ce que le proxy permet déjà ?
 3. Verrou de détection unique : effet sur les sous-agents parallèles d'opencode (à mesurer) ; 445 Mo par instance acceptable si une instance par brain ?
 4. Anglais (§4.5c) : RAM, latence et rappel avec les deux modèles ; instance par brain toujours acceptable ?
-5. Interaction entre l'injection de secrets de `sbx` et le proxy (à tester au prototype).
+5. Politique réseau globale de `sbx` : accepter un `deny-all` global pour tout le Mac, ou garder la politique actuelle avec vérification par Bob ? Neutralisation de l'appel de catalogue de modèles d'opencode ?
 6. Dossier de données d'Anarlog : volume chiffré avec lien symbolique, ou FileVault et rétention courte suffisent ? Un dossier Anarlog par client ?
 7. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
 8. Niveau de confiance acceptable pour le filtrage par libellés sur le compte entreprise (§5) ?
@@ -376,3 +394,4 @@ Sécurité des données d'Anarlog :
 - Anglais supporté via `en_core_web_lg` en plus de `fr_core_news_lg`, détection de langue par fragment.
 - Glossaire par brain alimenté à la main et par propositions automatiques validées.
 - Pseudonymisation jetable par run (mapping en RAM) ; clés JSON jamais modifiées ; secrets toujours supprimés.
+- Secrets : jeton du proxy fourni par `sbx secret set-custom` (placeholder), clé amont uniquement dans le proxy hôte ; validé par prototype.
