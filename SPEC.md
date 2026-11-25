@@ -1,6 +1,6 @@
 # SPEC — Bob : second brains cloisonnés pour un EM de prestataires
 
-> Statut : brouillon v0.7 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
+> Statut : brouillon v0.8 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
 
 ## 1. Contexte et objectifs
 
@@ -118,23 +118,32 @@ Exigences pour Bob, quelle que soit l'implémentation :
 - **Compteurs** : le tableau de bord du proxy alimente l'audit de Bob (volumes masqués, blocages), sans valeurs.
 - Le mapping n'étant qu'en RAM, il n'y a pas de table de jetons à chiffrer sur disque. Après expiration (30 min), les jetons d'un tour ancien ne sont plus restituables : à gérer dans les sessions longues **[À VALIDER : TTL configurable, `TTL_SESSION`]**.
 
-Écarts de la référence (voir §6) :
+Résultats du test de la référence (sous-agent, faux amont local, données fictives) :
 
-- Le proxy ne parle que le **format OpenAI** et ne convertit pas les formats : Claude Code (format Anthropic) n'est pas utilisable tel quel.
-- La restitution n'est **pas en streaming** : à mesurer sur l'expérience de l'agent, ajouter le streaming si nécessaire.
-- Le proxy n'a pas été conçu pour réhydrater les arguments d'appels d'outils **[À VALIDER : comportement sur `tool_calls`]**.
-- Limites déjà documentées : détection non exhaustive ; jeton local fixe accepté par tout processus local ; la base de sessions de l'agent peut contenir des valeurs restaurées en clair (elle doit donc vivre dans le brain chiffré).
+- **Acquis** : 95 tests passés ; pseudonymisation FR (personne, e-mail, téléphone, IBAN, lieu) ; secrets AWS/JWT/`password` masqués ; jetons stables dans une session et **mappings isolés entre sessions** ; **streaming et `tool_calls` fonctionnels** (arguments d'outils réhydratés) ; échec de détection ou timeout = blocage (fail-closed) ; latence ajoutée faible (+4 ms sur un texte court, environ 10 ms/ko) ; tableau de bord sans valeurs ; environ 445 Mo de RAM par instance (démarrage environ 10 s).
+- **Écarts à combler** :
+  1. aucune **entité personnalisée** (clients, consultants, projets) : un nom d'entreprise rare n'est pas détecté ;
+  2. aucun **profil** `open`/`standard`/`strict` : le comportement est unique ;
+  3. **secrets** trop peu couverts : `api_key=`, `Bearer`, `sk-…`, `ghp_…`, blocs PEM, `aws_secret_access_key` passent en clair ;
+  4. détection limitée au **français** (et partiellement l'anglais) : texte dans une autre langue envoyé en clair, sans alerte ;
+  5. les **clés JSON** des arguments d'outils de l'historique sont pseudonymisées (peut dérouter le modèle) ; faux positifs du NER (« OK », « Réunion ») ;
+  6. liste blanche de champs de requête : `response_format`, `reasoning_effort`, `parallel_tool_calls`, `seed`, `n` supprimés silencieusement ;
+  7. sans `x-session-id`, repli sur un hash du premier message (deux conversations similaires partagent un mapping) ;
+  8. chemin amont fixe, jeton local unique, un seul verrou de détection (sous-agents parallèles sérialisés, non mesuré) ;
+  9. format OpenAI uniquement (Claude Code non pris en charge) ;
+  10. mapping en RAM avec TTL : un jeton émis après expiration devient inconnu.
+- **Recommandation du test : adapter, ne pas réécrire.** Priorités : entités personnalisées par brain, profils, secrets élargis, clés JSON préservées, champs de requête, `x-session-id` obligatoire, jeton par brain.
 
 Points à challenger :
 
 | Choix de la référence | Question |
 |---|---|
-| Python + spaCy, service séparé | Garder (bonne détection du français) ou tout en TypeScript (une seule pile, mais détection plus faible) ? |
+| Python + spaCy, service séparé | Garder (≈445 Mo de RAM par instance, bonne détection du français) ou tout en TypeScript (une seule pile, détection plus faible) ? |
 | Format OpenAI uniquement | Ajouter le format Anthropic pour Claude Code, ou passer par une conversion tierce ? |
-| Restitution non streamée | Acceptable pour un agent interactif ? Sinon streaming avec réhydratation au fil de l'eau (jetons coupés entre deux morceaux). |
+| ~~Restitution non streamée~~ | Résolu : streaming et `tool_calls` déjà gérés par la référence. |
 | Mapping en RAM, TTL 30 min | Convient à la sécurité, mais casse les sessions longues et les reprises. Alternative : mapping persisté dans le volume chiffré du brain. |
 | Jeton local fixe | Un jeton par brain et par session, éventuellement lié au sandbox. |
-| Détection par modèle NER seul | Compléter par des listes propres au brain (consultants, client, projets) pour un meilleur rappel. |
+| Détection par modèle NER seul | Compléter par des listes propres au brain (consultants, client, projets) : **indispensable**, le NER rate les noms d'entreprise rares. |
 | Proxy générique | Intégrer l'audit, les profils par niveau et la session = brain en natif. |
 
 ### 4.2 Règles d'anonymisation
@@ -284,7 +293,7 @@ Aucun modèle de langage local. La RAM sert à macOS, Docker, au proxy et au mod
 
 1. Claude Code vs opencode : v1 en opencode (chemin éprouvé) te convient-il, avec les connecteurs Claude reportés à M6 ?
 2. Proxy : réutiliser, adapter ou réécrire (tableau §4.1) ? Instance par brain ou unique ? Profils `open`/`standard`/`strict` et entités personnalisées (noms de client, consultants) : ce que le proxy permet déjà ?
-3. Comportement du proxy sur `tool_calls` et sans streaming, avec un agent en usage réel ?
+3. Verrou de détection unique : effet sur les sous-agents parallèles d'opencode (à mesurer) ; 445 Mo par instance acceptable si une instance par brain ?
 4. Interaction entre l'injection de secrets de `sbx` et le proxy (à tester au prototype).
 5. Chiffrement et suppression côté Anarlog après export.
 6. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
