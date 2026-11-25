@@ -1,6 +1,6 @@
 # SPEC — Bob : second brains cloisonnés pour un EM de prestataires
 
-> Statut : brouillon v0.9 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
+> Statut : brouillon v0.10 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
 
 ## 1. Contexte et objectifs
 
@@ -173,7 +173,7 @@ Points à challenger :
 **a) Glossaire / référentiel par brain (entités personnalisées)**
 - Fichier `glossary.yaml` dans le brain (donc chiffré avec lui) : entrées `{valeur, alias[], type}` avec types `PERSON`, `ORG`/`CLIENT`, `PROJECT`, `PLACE`, `TERM_PUBLIC`.
 - Correspondance exacte, insensible à la casse et aux accents, sur mots entiers, indépendante de la langue ; elle s'applique **avant** le NER et **prime** sur lui.
-- Alimentation : saisie dans la web UI, proposition automatique à partir des notes du brain (noms propres récurrents) validée par Romain, et fiches consultants du brain `team`.
+- Alimentation (décision : **les deux**) : saisie manuelle dans la web UI, et proposition automatique à partir des notes du brain (noms propres récurrents, fiches consultants du brain `team`), toujours **validée par Romain** avant entrée dans le glossaire.
 - `TERM_PUBLIC` remplace `EXCLUDE_TERMS` (technologies, produits, mots qui donnent des faux positifs).
 - Glossaire global (`agency`, noms de ton entreprise) fusionné avec celui du brain, sans que le glossaire d'un client soit visible d'un autre.
 - Sécurité : le glossaire contient justement les noms sensibles ; il vit dans le volume chiffré et n'est chargé qu'en RAM dans le proxy.
@@ -186,8 +186,11 @@ Points à challenger :
 
 **c) Anglais et autres langues**
 - Cause : la référence n'embarque que le modèle spaCy `fr_core_news_lg` et fixe la langue à `fr` partout. L'anglais n'est donc détecté qu'en partie (noms de personnes, règles e-mail/IBAN/téléphone), pas les lieux ni les organisations ; l'arabe, le japonais, etc. ne sont pas couverts, sans alerte.
-- Options : (1) ajouter un modèle anglais (RAM et latence en plus, à mesurer) avec détection de langue par fragment ; (2) modèle multilingue plus léger mais moins précis ; (3) s'appuyer sur le glossaire (indépendant de la langue) et sur les règles par motifs.
-- Recommandation : glossaire + règles d'abord, ajout du modèle anglais si les tests de rappel le justifient ; en `strict`, alerte ou blocage quand la langue détectée n'est pas couverte.
+- Décision : ajouter le modèle spaCy anglais équivalent, `en_core_web_lg`, à côté de `fr_core_news_lg`, avec des recognizers Presidio déclarés pour `fr` et `en`.
+- Détection de la langue **par fragment** de texte (message ou bloc), puis analyse avec le modèle correspondant. Texte mixte : analyse par les deux modèles et fusion des entités (le plus protecteur gagne).
+- Langue non couverte (ni `fr` ni `en`) : alerte, et blocage en profil `strict`.
+- Les règles par motifs et le glossaire restent indépendants de la langue.
+- À mesurer : RAM supplémentaire par instance (aujourd'hui ≈445 Mo avec le seul modèle français), démarrage, latence, et rappel anglais sur un corpus de test (personnes, lieux, organisations).
 
 **d) Clés JSON pseudonymisées**
 - Le proxy parcourt les structures JSON (arguments d'outils, résultats d'outils en JSON) et ne transforme que les **valeurs** de type chaîne ; les clés, les noms de champs et la ponctuation JSON restent intacts.
@@ -326,7 +329,7 @@ Aucun modèle de langage local. La RAM sert à macOS, Docker, au proxy et au mod
 1. Claude Code vs opencode : v1 en opencode (chemin éprouvé) te convient-il, avec les connecteurs Claude reportés à M6 ?
 2. Proxy : réutiliser, adapter ou réécrire (tableau §4.1) ? Instance par brain ou unique ? Profils `open`/`standard`/`strict` et entités personnalisées (noms de client, consultants) : ce que le proxy permet déjà ?
 3. Verrou de détection unique : effet sur les sous-agents parallèles d'opencode (à mesurer) ; 445 Mo par instance acceptable si une instance par brain ?
-4. Glossaire (§4.5a) : saisie manuelle, proposition automatique ou les deux ? Anglais (§4.5c) : modèle supplémentaire nécessaire d'après les tests de rappel ?
+4. Anglais (§4.5c) : RAM, latence et rappel avec les deux modèles ; instance par brain toujours acceptable ?
 5. Interaction entre l'injection de secrets de `sbx` et le proxy (à tester au prototype).
 6. Chiffrement et suppression côté Anarlog après export.
 7. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
@@ -349,3 +352,6 @@ Aucun modèle de langage local. La RAM sert à macOS, Docker, au proxy et au mod
 - `agency` est personnel à Romain, non partagé.
 - Cible : MacBook Pro M2 16 Go.
 - Apple Speech on-device (qualité française jugée ok) ; capture via Anarlog, import par sa CLI vers le brain choisi.
+- Anglais supporté via `en_core_web_lg` en plus de `fr_core_news_lg`, détection de langue par fragment.
+- Glossaire par brain alimenté à la main et par propositions automatiques validées.
+- Pseudonymisation jetable par run (mapping en RAM) ; clés JSON jamais modifiées ; secrets toujours supprimés.
