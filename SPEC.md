@@ -1,6 +1,6 @@
 # SPEC — Bob : second brains cloisonnés pour un EM de prestataires
 
-> Statut : brouillon v0.12 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
+> Statut : brouillon v0.13 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
 
 ## 1. Contexte et objectifs
 
@@ -138,7 +138,7 @@ Points à challenger :
 
 | Choix de la référence | Question |
 |---|---|
-| Python + spaCy, service séparé | Garder (≈445 Mo de RAM par instance, bonne détection du français) ou tout en TypeScript (une seule pile, détection plus faible) ? |
+| Python + spaCy, service séparé | Garder (environ 1,7 Go de RAM par instance `strict` fr+en, bonne détection) ou tout en TypeScript (une seule pile, détection plus faible) ? |
 | Format OpenAI uniquement | Ajouter le format Anthropic pour Claude Code, ou passer par une conversion tierce ? |
 | ~~Restitution non streamée~~ | Résolu : streaming et `tool_calls` déjà gérés par la référence. |
 | Mapping en RAM, TTL 30 min | Garder le mapping jetable par run (§4.5e) ; régler le TTL au-delà de la durée de session. |
@@ -190,7 +190,7 @@ Points à challenger :
 - Détection de la langue **par fragment** de texte (message ou bloc), puis analyse avec le modèle correspondant. Texte mixte : analyse par les deux modèles et fusion des entités (le plus protecteur gagne).
 - Langue non couverte (ni `fr` ni `en`) : alerte, et blocage en profil `strict`.
 - Les règles par motifs et le glossaire restent indépendants de la langue.
-- À mesurer : RAM supplémentaire par instance (aujourd'hui ≈445 Mo avec le seul modèle français), démarrage, latence, et rappel anglais sur un corpus de test (personnes, lieux, organisations).
+- Mesuré sur prototype : voir §4.6 (RAM environ 1,7 Go avec les deux modèles, rappel anglais de 36 % à 94 %).
 
 **d) Clés JSON pseudonymisées**
 - Le proxy parcourt les structures JSON (arguments d'outils, résultats d'outils en JSON) et ne transforme que les **valeurs** de type chaîne ; les clés, les noms de champs et la ponctuation JSON restent intacts.
@@ -202,6 +202,42 @@ Points à challenger :
 - Un mapping **jetable par run**, en RAM, supprimé à la fin de session, est donc le choix par défaut : rien à persister, rien à chiffrer, et moins de corrélation d'un run à l'autre côté fournisseur.
 - Impacts : (1) la numérotation change d'un run à l'autre (`PERSON_1` n'est pas la même personne), sans conséquence si le modèle ne voit que la conversation courante ; (2) si une session est reprise avec un historique en clair, le proxy reconstruit un nouveau mapping et tout reste cohérent ; (3) le cache de prompt du fournisseur ne sert pas d'un run à l'autre, ce qui est un coût mineur ; (4) un jeton émis par le modèle après expiration du TTL devient inconnu : le TTL doit dépasser la durée de session (voire expirer à la fermeture du sandbox) ; (5) les fichiers écrits par l'agent contiennent les vraies valeurs, car la réhydratation a lieu avant leur écriture.
 - Alternative écartée par défaut : jetons déterministes par brain (même entité, même jeton à chaque run). Avantage : stabilité entre runs. Inconvénients : table à persister et chiffrer, corrélation possible. À reconsidérer seulement si les sessions longues posent problème.
+
+### 4.6 Résultats du prototype du proxy (copie adaptée, hors dépôt)
+
+Un sous-agent a implémenté les adaptations §4.5 dans une copie du proxy de référence, avec un faux amont et des données fictives.
+
+- **Tests** : 95 → 151 passent, sans régression.
+- **Anglais** : `fr_core_news_lg` + `en_core_web_lg`, détection de langue par fragment (bibliothèque légère, environ 2 Mo, déterministe, langues restreintes à fr/en/de/es/it/pt/nl), fusion des entités, alerte une fois par session sur langue non couverte, blocage optionnel.
+- **Glossaire** : `glossary.yaml` (valeur, alias, type), correspondance exacte insensible à la casse et aux accents, priorité secrets > glossaire > NER, rechargement à chaud, démarrage refusé si invalide.
+- **Secrets** : motifs étendus (`api_key`, `Bearer`, `sk-`, `ghp_`, PEM, `*_secret_*`, etc.) avec 11 cas de faux positifs testés ; détection par entropie ajoutée (valeur d'une clé suspecte, ≥ 20 caractères, entropie ≥ 3,5), seuil à valider sur du vrai trafic.
+- **Clés JSON** : seules les valeurs chaîne sont transformées (arguments et résultats d'outils JSON) ; clés identiques dans l'historique renvoyé à l'amont ; une valeur est aussi masquée quand le nom de sa clé est sensible.
+- **Profils** (`PROFILE`) : `open` (secrets), `standard` (secrets, e-mail, téléphone), `strict` (tout, défaut). En `open`/`standard`, aucun modèle spaCy n'est chargé.
+
+| Mesure | Référence | `strict` (fr+en) | `standard` / `open` |
+|---|---|---|---|
+| RAM au repos | 1 082 Mo | **1 705 Mo** | 70 Mo |
+| Démarrage | 3,3 s | 3,8 s | 0,6 s |
+| Latence 4,5 ko FR | 35 ms | 38 ms | 5 ms |
+| Latence 4,5 ko mixte FR/EN | 34 ms | 99 ms | 5 ms |
+
+| Rappel (140 entités, corpus fictif facile) | Référence | Adapté | Adapté + glossaire |
+|---|---|---|---|
+| Total | 54 % | 92 % | **96 %** |
+| Anglais | 36 % | 94 % | 96 % |
+| Organisations | 25 % | 88 % | 88 % |
+| Clients | 25 % | 83 % | 92 % |
+| Entités du glossaire | 22 % | 84 % | 100 % |
+
+Réserves : corpus écrit à la main (ordre de grandeur, pas une performance réelle), une seule exécution par mesure. La RAM de référence mesurée ici (1 082 Mo) diffère du test précédent (≈445 Mo) : à clarifier avant de dimensionner les instances.
+
+Décisions à prendre :
+- **RAM** : environ 1,7 Go par instance `strict` avec les deux modèles. Une instance par brain actif devient coûteuse sur 16 Go : préférer **une instance partagée** avec sessions isolées par `x-session-id`, ou un profil `standard` (70 Mo) quand il suffit.
+- Glossaire actif seulement en `standard` et `strict` (choix du prototype) : à trancher pour `open`.
+- IBAN en `strict` seulement (le SPEC le met en `standard`) : à trancher.
+- Alias d'une même entité (« Acme », « Acme Industries ») : jetons différents ; la restitution reste correcte mais la corrélation est perdue.
+- Texte mixte FR/EN : latence et risque de langue erronée sur les fragments courts ou le code.
+- Non rejoués : tests opencode, e2e et PII de la référence.
 
 ## 5. Connecteurs (mail, agenda, Drive)
 
@@ -367,8 +403,8 @@ Sécurité des données d'Anarlog :
 
 1. Claude Code vs opencode : v1 en opencode (chemin éprouvé) te convient-il, avec les connecteurs Claude reportés à M6 ?
 2. Proxy : réutiliser, adapter ou réécrire (tableau §4.1) ? Instance par brain ou unique ? Profils `open`/`standard`/`strict` et entités personnalisées (noms de client, consultants) : ce que le proxy permet déjà ?
-3. Verrou de détection unique : effet sur les sous-agents parallèles d'opencode (à mesurer) ; 445 Mo par instance acceptable si une instance par brain ?
-4. Anglais (§4.5c) : RAM, latence et rappel avec les deux modèles ; instance par brain toujours acceptable ?
+3. Verrou de détection unique : effet sur les sous-agents parallèles d'opencode (à mesurer).
+4. Proxy (§4.6) : instance partagée ou par brain vu la RAM ; glossaire en `open` ; IBAN en `standard` ; alias d'une même entité.
 5. Politique réseau globale de `sbx` : accepter un `deny-all` global pour tout le Mac, ou garder la politique actuelle avec vérification par Bob ? Neutralisation de l'appel de catalogue de modèles d'opencode ?
 6. Dossier de données d'Anarlog : volume chiffré avec lien symbolique, ou FileVault et rétention courte suffisent ? Un dossier Anarlog par client ?
 7. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
