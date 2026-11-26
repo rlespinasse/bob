@@ -37,7 +37,7 @@ export const systemRunner: Runner = (cmd, args, options) =>
  * Hôtes que le kit opencode de `sbx` autorise lui-même à la création du sandbox (règles `kit:`,
  * non modifiables, recréées à chaque création) : API IA et GitHub. Ils contournent le `deny-all`
  * global ; seule une règle de **refus explicite** globale l'emporte sur elles (vérifié sur sbx 0.54.0).
- * Le registre npm et les miroirs Debian du kit restent autorisés (risque résiduel, voir SPEC §6.1 bis).
+ * Les miroirs Debian (port 80, lecture seule) du kit restent autorisés.
  */
 export const DIRECT_LLM_HOSTS = [
   "api.anthropic.com:443",
@@ -62,6 +62,8 @@ export const DIRECT_LLM_HOSTS = [
   "codeload.github.com:443",
   "copilot.github.com:443",
   "raw.githubusercontent.com:443",
+  // Registre npm : opencode fonctionne sans (testé) ; publier avec un jeton d'attaquant serait une exfiltration.
+  "registry.npmjs.org:443",
 ];
 
 /** Règles à ajouter (jokers pour les sous-domaines) ; à exécuter par Romain, jamais par Bob. */
