@@ -1,6 +1,6 @@
 # SPEC — Bob : second brains cloisonnés pour un EM de prestataires
 
-> Statut : brouillon v0.16 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
+> Statut : brouillon v0.17 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
 
 ## 1. Contexte et objectifs
 
@@ -289,6 +289,18 @@ Risques :
 - **Chiffrement** : le volume APFS du brain doit être monté **avant** le lancement du sandbox ; Bob arrête le sandbox avant de démonter/verrouiller.
 - Pré-requis vérifiés au démarrage : `sbx`, opencode, proxy opérationnel (`GET /health`), clé de la passerelle présente, politique globale conforme.
 
+### 6.1 bis Résultats du prototype de bout en bout (M1 + M2)
+
+Bob (backend TypeScript) → proxy adapté → faux amont, avec opencode dans un vrai sandbox `sbx`, sur ce Mac :
+
+- **Chaîne validée** : création du brain, lancement par l'API (démarrage du proxy avec le profil et le glossaire du brain, création du sandbox, jeton fourni par stdin, config opencode copiée), puis `opencode run` dans le sandbox. L'amont a reçu `[[PERSON_1]]`, `[[CLIENT_1]]` (glossaire), `[[EMAIL_ADDRESS_1]]` et `[REDACTED_SECRET]` ; aucune valeur brute (nom, client, e-mail, clé) n'a atteint l'amont ; la réponse a été restituée côté agent ; la clé amont n'existe que dans le proxy ; l'audit enregistre le lancement sans contenu.
+- **Constat majeur : `sbx` contourne la politique réseau pour les API IA.** Avec un `deny-all` global, `sbx policy check` annonce « Denied » pour `api.anthropic.com`, mais depuis le sandbox ces hôtes (ainsi que `api.openai.com` et le catalogue d'opencode) répondent (HTTP 401/404/421) ; `sbx policy log` les classe `forward-bypass`, sans règle. Les autres hôtes (ex. `example.com`) sont bien bloqués (403). Observé sur sbx 0.54.0.
+  - Conséquence : le « sandbox n'a aucune autre route vers un LLM » du §4.1 **n'est pas garanti au niveau réseau**. Le sandbox ne détient pas de vraie clé (sentinelles), donc les appels directs échouent en 401, mais un agent compromis pourrait utiliser une clé fournie par un attaquant vers ces hôtes (exfiltration possible).
+  - Mesures : Bob ne se fie plus à `sbx policy check` seul ; il **sonde depuis le sandbox** après création et journalise un événement `policy.bypass_observed` avec avertissement (le lancement n'est pas bloqué, car le contournement est inévitable) ; ne jamais placer de vraie clé API dans un sandbox ; à signaler à Docker et à retester à chaque mise à jour de `sbx`. Le blocage strict n'est possible qu'avec un autre mécanisme (par ex. filtrage au niveau de l'hôte) **[À étudier]**.
+- **Constat majeur : le prompt système d'opencode est massivement pseudonymisé** (31 ko, une trentaine de jetons `ORG` et plusieurs `PERSON`, ex. un nom de champ de code pris pour une personne) : qualité de l'agent dégradée et coût inutile. À traiter dans le proxy : ne pas analyser les messages `system` ni les schémas d'outils, ou analyser uniquement les messages `user` et les résultats d'outils **[priorité M3]**.
+- Détails d'intégration opencode : `sbx` impose `OPENCODE_MODEL` et sa propre config ; il faut passer `--model bobproxy/<modèle>` à opencode ; le fichier de config copié doit être lisible par l'agent (0644) ; un `sbx exec` sur un sandbox arrêté le redémarre.
+- **Limites actuelles de Bob** : une instance de proxy à la fois (changer de brain la redémarre) ; le port est fixe (8000) car la règle `sbx policy allow network localhost:8000` appartient à Romain ; la session interactive s'ouvre dans un terminal par la commande affichée (pas de terminal intégré) ; chiffrement, anonymisation du glossaire par import et briefing non faits.
+
 ### 6.2 Ressources (MacBook Pro M2 16 Go)
 
 Aucun modèle de langage local. La RAM sert à macOS, Docker, au proxy et au modèle spaCy `fr_core_news_lg` (détection d'entités), qui tient largement sur 16 Go.
@@ -431,4 +443,4 @@ Sécurité des données d'Anarlog :
 - Glossaire par brain alimenté à la main et par propositions automatiques validées.
 - Pseudonymisation jetable par run (mapping en RAM) ; clés JSON jamais modifiées ; secrets toujours supprimés.
 - Secrets : jeton du proxy fourni par `sbx secret set-custom` (placeholder), clé amont uniquement dans le proxy hôte ; validé par prototype.
-- Politique réseau `sbx` : `deny-all` global (en place) + autorisations `localhost:8000` et `models.dev:443` ; Bob vérifie (`sbx policy check network`) sans jamais modifier la politique globale.
+- Politique réseau `sbx` : `deny-all` global (en place) + autorisations `localhost:8000` et `models.dev:443` ; Bob ne modifie jamais la politique globale. `sbx` contourne la politique pour les API IA (§6.1 bis) : Bob sonde depuis le sandbox et avertit.
