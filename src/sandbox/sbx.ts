@@ -33,38 +33,89 @@ export const systemRunner: Runner = (cmd, args, options) =>
     child.stdin.end(options.input);
   });
 
-/** API LLM qui doivent rester injoignables depuis un sandbox (le trafic passe par le proxy). */
+/**
+ * Hôtes que le kit opencode de `sbx` autorise lui-même à la création du sandbox (règles `kit:`,
+ * non modifiables, recréées à chaque création) : API IA et GitHub. Ils contournent le `deny-all`
+ * global ; seule une règle de **refus explicite** globale l'emporte sur elles (vérifié sur sbx 0.54.0).
+ * Le registre npm et les miroirs Debian du kit restent autorisés (risque résiduel, voir SPEC §6.1 bis).
+ */
 export const DIRECT_LLM_HOSTS = [
   "api.anthropic.com:443",
   "api.openai.com:443",
   "generativelanguage.googleapis.com:443",
+  "api.groq.com:443",
+  "api.x.ai:443",
+  "openrouter.ai:443",
+  "api.githubcopilot.com:443",
+  "aiplatform.googleapis.com:443",
+  "vertexai.googleapis.com:443",
+  "oauth2.googleapis.com:443",
+  "console.anthropic.com:443",
+  "claude.ai:443",
+  "auth.openai.com:443",
+  "chatgpt.com:443",
+  "openai.com:443",
+  "opencode.ai:443",
+  "models.opencode.ai:443",
+  "github.com:443",
+  "api.github.com:443",
+  "codeload.github.com:443",
+  "copilot.github.com:443",
+  "raw.githubusercontent.com:443",
 ];
+
+/** Règles à ajouter (jokers pour les sous-domaines) ; à exécuter par Romain, jamais par Bob. */
+export const DENY_RULES = [
+  ...DIRECT_LLM_HOSTS.filter((h) => h !== "models.opencode.ai:443" && h !== "raw.githubusercontent.com:443"),
+  "*.opencode.ai:443",
+  "*.githubusercontent.com:443",
+  "api.business.githubcopilot.com:443",
+  "api.enterprise.githubcopilot.com:443",
+  "api.individual.githubcopilot.com:443",
+];
+
+export function denyCommands(): string[] {
+  return DENY_RULES.map((rule) => `sbx policy deny network '${rule}'`);
+}
 
 export interface PolicyCheck {
   ok: boolean;
   problems: string[];
 }
 
-/** `sbx policy check network` : ligne `Allowed:` (code 0) ou `Denied:` (code 1) ; le reste est illisible. */
-async function isAllowed(run: Runner, target: string): Promise<boolean | undefined> {
+type Verdict = "allowed" | "denied-default" | "denied-explicit" | "unknown";
+
+/** `sbx policy check network` : `Allowed:` (code 0) ou `Denied:` (code 1) avec la raison. */
+async function verdict(run: Runner, target: string): Promise<Verdict> {
   const res = await run("sbx", ["policy", "check", "network", target]);
-  if (/^\s*Denied:/m.test(res.stdout)) return false;
-  if (/^\s*Allowed:/m.test(res.stdout)) return true;
-  return undefined;
+  if (/^\s*Allowed:/m.test(res.stdout)) return "allowed";
+  if (/^\s*Denied:/m.test(res.stdout)) {
+    return /denied by .*rule/i.test(res.stdout) ? "denied-explicit" : "denied-default";
+  }
+  return "unknown";
 }
 
-/** Fail closed : un résultat non reconnu compte comme un échec. */
+/**
+ * Fail closed. Un refus **par défaut** ne suffit pas : les règles du kit opencode autorisent ces hôtes
+ * dans chaque sandbox, et seul un refus explicite global les neutralise.
+ */
 export async function checkNetworkPolicy(run: Runner, proxyPort: number): Promise<PolicyCheck> {
   const problems: string[] = [];
+  const missing: string[] = [];
   for (const host of DIRECT_LLM_HOSTS) {
-    const allowed = await isAllowed(run, host);
-    if (allowed === undefined) problems.push(`politique illisible pour ${host}`);
-    else if (allowed) {
-      problems.push(`${host} est joignable directement : lancer \`sbx policy reset\` puis \`sbx policy init deny-all\``);
-    }
+    const v = await verdict(run, host);
+    if (v === "unknown") problems.push(`politique illisible pour ${host}`);
+    else if (v === "allowed") problems.push(`${host} est autorisé : lancer \`sbx policy deny network ${host}\``);
+    else if (v === "denied-default") missing.push(host);
   }
-  const proxy = await isAllowed(run, `localhost:${proxyPort}`);
-  if (proxy !== true) {
+  if (missing.length > 0) {
+    problems.push(
+      `refus explicite manquant pour ${missing.length} hôte(s) (${missing.slice(0, 3).join(", ")}…) : ` +
+        "le kit opencode les autorise dans chaque sandbox ; exécuter les commandes de `denyCommands()` (`npm run policy`)",
+    );
+  }
+  const proxy = await verdict(run, `localhost:${proxyPort}`);
+  if (proxy !== "allowed") {
     problems.push(`le proxy local n'est pas autorisé : \`sbx policy allow network localhost:${proxyPort}\``);
   }
   return { ok: problems.length === 0, problems };
@@ -120,19 +171,19 @@ export interface LaunchPlan {
 export class LaunchBlockedError extends Error {}
 
 /**
- * Sonde comportementale : `sbx policy check` annonce « refusé », mais sbx 0.54.0 laisse passer
- * (« forward-bypass ») le trafic vers les API des fournisseurs IA. On teste donc depuis le sandbox.
- * Retourne les hôtes réellement joignables ; un code HTTP (pas 000/403 proxy) prouve la connexion.
+ * Sonde comportementale, depuis le sandbox (création = règles du kit présentes) : tous les hôtes sont
+ * testés en parallèle. Un code HTTP autre que 403/000 prouve une connexion réelle.
  */
 export async function probeDirectAccess(run: Runner, sandbox: string): Promise<string[]> {
+  const hosts = DIRECT_LLM_HOSTS.map((t) => t.split(":")[0] ?? t);
+  const script =
+    hosts.map((h) => `(printf '%s %s\\n' ${h} "$(curl -s -m 8 -o /dev/null -w '%{http_code}' https://${h}/)") &`).join(" ") +
+    " wait";
+  const res = await run("sbx", ["exec", sandbox, "sh", "-c", script]);
   const reachable: string[] = [];
-  for (const target of DIRECT_LLM_HOSTS) {
-    const host = target.split(":")[0] ?? target;
-    const res = await run("sbx", [
-      "exec", sandbox, "curl", "-s", "-m", "8", "-o", "/dev/null", "-w", "%{http_code}", `https://${host}/`,
-    ]);
-    const code = res.stdout.trim();
-    if (/^[1-5]\d\d$/.test(code) && code !== "403") reachable.push(host);
+  for (const line of res.stdout.split("\n")) {
+    const [host, code] = line.trim().split(/\s+/);
+    if (host && code && /^[1-5]\d\d$/.test(code) && code !== "403") reachable.push(host);
   }
   return reachable;
 }
@@ -187,10 +238,11 @@ export async function launchBrain(input: LaunchInput): Promise<LaunchPlan> {
   const warnings: string[] = [];
   const bypass = await probeDirectAccess(run, sandbox);
   if (bypass.length > 0) {
-    warnings.push(
-      `sbx laisse joindre directement ${bypass.join(", ")} malgré la politique : ne jamais placer de vraie clé API dans ce sandbox`,
-    );
     await audit.record("policy.bypass_observed", brain.id, { hosts: bypass.join(",") });
+    return block(
+      `le sandbox joint directement ${bypass.join(", ")} malgré la politique : ajouter des refus explicites (\`npm run policy\`)`,
+      "policy.check_failed",
+    );
   }
 
   await audit.record("launch.started", brain.id, {
