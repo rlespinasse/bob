@@ -69,6 +69,17 @@ async function refresh() {
       refresh();
     };
     td.append(sel);
+    const launch = document.createElement('button');
+    launch.textContent = 'Lancer';
+    launch.onclick = async () => {
+      try { const r = await api('/api/launch', { method: 'POST', body: JSON.stringify({ id: b.id }) }); msg('Dans un terminal : ' + r.command); }
+      catch (e) { msg(e.message); }
+      refresh();
+    };
+    const stop = document.createElement('button');
+    stop.textContent = 'Arrêter';
+    stop.onclick = async () => { try { await api('/api/stop', { method: 'POST', body: JSON.stringify({ id: b.id }) }); msg(''); } catch (e) { msg(e.message); } refresh(); };
+    td.append(' ', launch, ' ', stop);
     for (const i of b.issues) { const w = document.createElement('div'); w.className = 'warn'; w.textContent = i.message; td.append(w); }
     tr.append(td); body.append(tr);
   }

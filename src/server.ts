@@ -5,6 +5,7 @@ import { z } from "zod";
 import { AuditLog } from "./audit.ts";
 import { BrainKind, Sensitivity } from "./brain/schema.ts";
 import { BrainStore } from "./brain/store.ts";
+import type { LaunchPlan } from "./sandbox/sbx.ts";
 import { page } from "./ui.ts";
 
 export interface ServerOptions {
@@ -12,6 +13,11 @@ export interface ServerOptions {
   audit: AuditLog;
   /** Jeton de session ; généré aléatoirement s'il est absent. */
   token?: string;
+  /** Lancement et arrêt d'un brain (proxy + sandbox) ; absent si le proxy n'est pas configuré. */
+  launcher?: {
+    launch: (brainId: string) => Promise<LaunchPlan>;
+    stop: (brainId: string) => Promise<void>;
+  };
 }
 
 export interface BobServer {
@@ -21,11 +27,12 @@ export interface BobServer {
 
 const COOKIE = "bob_session";
 const CreateBody = z.object({ kind: BrainKind, slug: z.string().optional(), sensitivity: Sensitivity.optional() });
+const IdBody = z.object({ id: z.string() });
 const LevelBody = z.object({ id: z.string(), sensitivity: Sensitivity, confirmed: z.boolean() });
 
 export function createBobServer(options: ServerOptions): BobServer {
   const token = options.token ?? randomBytes(32).toString("hex");
-  const { store, audit } = options;
+  const { store, audit, launcher } = options;
 
   const server = createServer(async (req, res) => {
     try {
@@ -82,6 +89,17 @@ export function createBobServer(options: ServerOptions): BobServer {
       const body = LevelBody.parse(await json(req));
       const brain = await store.setSensitivity(body.id, body.sensitivity, body.confirmed);
       return send(res, 200, { id: brain.id, ...brain.config, issues: brain.issues });
+    }
+    if (req.method === "POST" && (url.pathname === "/api/launch" || url.pathname === "/api/stop")) {
+      if (!launcher) return send(res, 422, { error: "proxy non configuré (BOB_PROXY_DIR, UPSTREAM_API_KEY)" });
+      const { id } = IdBody.parse(await json(req));
+      await store.load(id); // erreur si l'identifiant est invalide ou le brain inexistant
+      if (url.pathname === "/api/stop") {
+        await launcher.stop(id);
+        return send(res, 200, { stopped: id });
+      }
+      const plan = await launcher.launch(id);
+      return send(res, 200, { sandbox: plan.sandbox, command: [plan.attach.cmd, ...plan.attach.args].join(" ") });
     }
     if (req.method === "GET" && url.pathname === "/api/audit") {
       const limit = Math.min(Number(url.searchParams.get("limit") ?? 50) || 50, 500);
