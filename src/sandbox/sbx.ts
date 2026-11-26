@@ -45,12 +45,11 @@ export interface PolicyCheck {
   problems: string[];
 }
 
-/** `sbx policy check network` : une ligne `Rule:` = autorisé ; `Reason:` = refusé. */
+/** `sbx policy check network` : ligne `Allowed:` (code 0) ou `Denied:` (code 1) ; le reste est illisible. */
 async function isAllowed(run: Runner, target: string): Promise<boolean | undefined> {
   const res = await run("sbx", ["policy", "check", "network", target]);
-  if (res.code !== 0) return undefined;
-  if (/^\s*Reason:/m.test(res.stdout)) return false;
-  if (/^\s*Rule:/m.test(res.stdout)) return true;
+  if (/^\s*Denied:/m.test(res.stdout)) return false;
+  if (/^\s*Allowed:/m.test(res.stdout)) return true;
   return undefined;
 }
 

@@ -13,8 +13,8 @@ import {
   type Runner,
 } from "../src/sandbox/sbx.ts";
 
-const DENIED = "  Context: global\n  Reason:      no matching allow rule (default deny)\n";
-const ALLOWED = "  Context: global\n  Rule:        abc\n";
+const DENIED = "  Denied:      x:443\n  Context:     global\n  Reason:      no matching allow rule (default deny)\n";
+const ALLOWED = "  Allowed:     x:443\n  Context:     global\n  Rule:        abc\n";
 
 interface Call {
   args: string[];
@@ -27,7 +27,10 @@ function fakeRunner(policy: (target: string) => string, existing = ""): { run: R
     const call: Call = { args };
     if (options?.input !== undefined) call.input = options.input;
     calls.push(call);
-    if (args[0] === "policy") return { code: 0, stdout: policy(args[3] ?? ""), stderr: "" };
+    if (args[0] === "policy") {
+      const stdout = policy(args[3] ?? "");
+      return { code: stdout.includes("Denied:") ? 1 : 0, stdout, stderr: "" }; // comme le vrai sbx
+    }
     if (args[0] === "ls") return { code: 0, stdout: existing, stderr: "" };
     return { code: 0, stdout: "", stderr: "" };
   };
