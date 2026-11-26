@@ -146,7 +146,7 @@ Niveau : ${config.sensitivity} (proxy : ${config.proxy.profile}).
 
 Règles pour l'agent :
 - Ne travaille que dans ce dossier ; ne cherche pas d'autres brains ni de données d'autres clients.
-- Les valeurs sensibles peuvent apparaître sous forme de jetons (\`[[PERSON_1]]\`) : ne les « corrige » pas.
+- Les valeurs sensibles peuvent apparaître remplacées par des jetons entre doubles crochets : ne les « corrige » pas.
 - Les imports bruts sont dans \`inbox/\` ; classe-les dans \`missions/\` après validation de Romain.
 - N'envoie aucun mail et ne crée aucun événement sans confirmation explicite.
 `;

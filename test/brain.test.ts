@@ -28,6 +28,8 @@ describe("BrainStore", () => {
     const log = execFileSync("git", ["log", "--oneline"], { cwd: brain.dir }).toString();
     expect(log).toContain("crée le brain client/acme");
     expect(await readFile(join(brain.dir, "glossary.yaml"), "utf8")).toContain("entries");
+    // Un exemple de jeton littéral dans le contexte serait lui-même pseudonymisé par le proxy.
+    expect(await readFile(join(brain.dir, "AGENTS.md"), "utf8")).not.toMatch(/\[\[[A-Z_]+_\d+\]\]/);
   });
 
   it("crée les brains singletons et les liste dans l'ordre", async () => {
