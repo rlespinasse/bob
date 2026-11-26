@@ -99,7 +99,7 @@ export function createBobServer(options: ServerOptions): BobServer {
         return send(res, 200, { stopped: id });
       }
       const plan = await launcher.launch(id);
-      return send(res, 200, { sandbox: plan.sandbox, command: [plan.attach.cmd, ...plan.attach.args].join(" ") });
+      return send(res, 200, { sandbox: plan.sandbox, warnings: plan.warnings, command: [plan.attach.cmd, ...plan.attach.args].join(" ") });
     }
     if (req.method === "GET" && url.pathname === "/api/audit") {
       const limit = Math.min(Number(url.searchParams.get("limit") ?? 50) || 50, 500);

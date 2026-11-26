@@ -21,7 +21,11 @@ interface Call {
   input?: string;
 }
 
-function fakeRunner(policy: (target: string) => string, existing = ""): { run: Runner; calls: Call[] } {
+function fakeRunner(
+  policy: (target: string) => string,
+  existing = "",
+  probe: (url: string) => string = () => "000",
+): { run: Runner; calls: Call[] } {
   const calls: Call[] = [];
   const run: Runner = async (_cmd, args, options) => {
     const call: Call = { args };
@@ -31,6 +35,7 @@ function fakeRunner(policy: (target: string) => string, existing = ""): { run: R
       const stdout = policy(args[3] ?? "");
       return { code: stdout.includes("Denied:") ? 1 : 0, stdout, stderr: "" }; // comme le vrai sbx
     }
+    if (args[0] === "exec" && args.includes("curl")) return { code: 0, stdout: probe(args[args.length - 1] ?? ""), stderr: "" };
     if (args[0] === "ls") return { code: 0, stdout: existing, stderr: "" };
     return { code: 0, stdout: "", stderr: "" };
   };
@@ -76,7 +81,7 @@ describe("launchBrain", () => {
     const plan = await launchBrain({ brain, run, audit, proxyPort: 8000, proxyToken: "REAL-TOKEN", model: "m" });
 
     expect(plan.sandbox).toBe("bob-client-acme");
-    expect(plan.attach.args).toEqual(["exec", "-it", "-w", brain.dir, "bob-client-acme", "opencode"]);
+    expect(plan.attach.args).toEqual(["exec", "-it", "-w", brain.dir, "bob-client-acme", "opencode", "--model", "bobproxy/m"]);
     const create = calls.find((c) => c.args[0] === "create");
     expect(create?.args).toEqual(["create", "--name", "bob-client-acme", "opencode", brain.dir]);
     const secret = calls.find((c) => c.args[0] === "secret");
@@ -86,6 +91,16 @@ describe("launchBrain", () => {
 
     const events = (await readFile(audit.path, "utf8")).trim().split("\n").map((l) => JSON.parse(l).event);
     expect(events).toEqual(["brain.created", "launch.started"]);
+    expect(plan.warnings).toEqual([]);
+  });
+
+  it("signale le contournement de politique par sbx (sonde comportementale) sans bloquer", async () => {
+    const brain = await store.create({ kind: "client", slug: "acme" });
+    const { run } = fakeRunner(lockedDown, "", (url) => (url.includes("anthropic") ? "401" : "000"));
+    const plan = await launchBrain({ brain, run, audit, proxyPort: 8000, proxyToken: "t", model: "m" });
+    expect(plan.warnings).toHaveLength(1);
+    expect(plan.warnings[0]).toMatch(/api\.anthropic\.com/);
+    expect(await readFile(audit.path, "utf8")).toContain("policy.bypass_observed");
   });
 
   it("réutilise un sandbox existant", async () => {

@@ -111,11 +111,31 @@ export interface LaunchInput {
 
 export interface LaunchPlan {
   sandbox: string;
+  /** Écarts constatés qui n'empêchent pas le lancement (ex. contournement de politique par sbx). */
+  warnings: string[];
   /** Commande à attacher à un terminal pour la session interactive. */
   attach: { cmd: string; args: string[] };
 }
 
 export class LaunchBlockedError extends Error {}
+
+/**
+ * Sonde comportementale : `sbx policy check` annonce « refusé », mais sbx 0.54.0 laisse passer
+ * (« forward-bypass ») le trafic vers les API des fournisseurs IA. On teste donc depuis le sandbox.
+ * Retourne les hôtes réellement joignables ; un code HTTP (pas 000/403 proxy) prouve la connexion.
+ */
+export async function probeDirectAccess(run: Runner, sandbox: string): Promise<string[]> {
+  const reachable: string[] = [];
+  for (const target of DIRECT_LLM_HOSTS) {
+    const host = target.split(":")[0] ?? target;
+    const res = await run("sbx", [
+      "exec", sandbox, "curl", "-s", "-m", "8", "-o", "/dev/null", "-w", "%{http_code}", `https://${host}/`,
+    ]);
+    const code = res.stdout.trim();
+    if (/^[1-5]\d\d$/.test(code) && code !== "403") reachable.push(host);
+  }
+  return reachable;
+}
 
 export async function launchBrain(input: LaunchInput): Promise<LaunchPlan> {
   const { brain, run, audit } = input;
@@ -157,11 +177,20 @@ export async function launchBrain(input: LaunchInput): Promise<LaunchPlan> {
   const tmp = await mkdtemp(join(tmpdir(), "bob-oc-"));
   try {
     const file = join(tmp, "opencode.json");
-    await writeFile(file, JSON.stringify(buildOpencodeConfig({ ...input, placeholder }), null, 2), { mode: 0o600 });
+    await writeFile(file, JSON.stringify(buildOpencodeConfig({ ...input, placeholder }), null, 2), { mode: 0o644 }); // lisible par l'agent dans la VM ; ne contient que le placeholder
     const copied = await run("sbx", ["cp", file, `${sandbox}:/home/agent/.config/opencode/opencode.json`]);
     if (copied.code !== 0) throw new Error(`sbx cp a échoué : ${copied.stderr.trim()}`);
   } finally {
     await rm(tmp, { recursive: true, force: true });
+  }
+
+  const warnings: string[] = [];
+  const bypass = await probeDirectAccess(run, sandbox);
+  if (bypass.length > 0) {
+    warnings.push(
+      `sbx laisse joindre directement ${bypass.join(", ")} malgré la politique : ne jamais placer de vraie clé API dans ce sandbox`,
+    );
+    await audit.record("policy.bypass_observed", brain.id, { hosts: bypass.join(",") });
   }
 
   await audit.record("launch.started", brain.id, {
@@ -170,7 +199,7 @@ export async function launchBrain(input: LaunchInput): Promise<LaunchPlan> {
     proxy_profile: brain.config.proxy.profile,
     connectors: brain.config.connectors.enabled.join(",") || "none",
   });
-  return { sandbox, attach: { cmd: "sbx", args: ["exec", "-it", "-w", brain.dir, sandbox, "opencode"] } };
+  return { sandbox, warnings, attach: { cmd: "sbx", args: ["exec", "-it", "-w", brain.dir, sandbox, "opencode", "--model", `bobproxy/${input.model}`] } };
 }
 
 export async function stopBrain(run: Runner, audit: AuditLog, brainId: string): Promise<void> {

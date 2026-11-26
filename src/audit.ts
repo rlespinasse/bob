@@ -13,6 +13,7 @@ export type AuditEvent =
   | "launch.blocked"
   | "launch.started"
   | "policy.check_failed"
+  | "policy.bypass_observed"
   | "connector.enabled"
   | "export";
 

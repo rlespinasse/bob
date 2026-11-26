@@ -116,7 +116,7 @@ describe("serveur local", () => {
       launcher: {
         launch: async (id) => {
           calls.push(`launch:${id}`);
-          return { sandbox: "bob-client-acme", attach: { cmd: "sbx", args: ["exec", "bob-client-acme"] } };
+          return { sandbox: "bob-client-acme", warnings: [], attach: { cmd: "sbx", args: ["exec", "bob-client-acme"] } };
         },
         stop: async (id) => void calls.push(`stop:${id}`),
       },
@@ -124,7 +124,7 @@ describe("serveur local", () => {
     await new Promise<void>((resolve) => withLauncher.server.listen(0, "127.0.0.1", resolve));
     const url = `http://127.0.0.1:${(withLauncher.server.address() as AddressInfo).port}`;
     const ok = await fetch(`${url}/api/launch`, { method: "POST", headers: auth(), body: JSON.stringify({ id: "client/acme" }) });
-    expect(await ok.json()).toEqual({ sandbox: "bob-client-acme", command: "sbx exec bob-client-acme" });
+    expect(await ok.json()).toEqual({ sandbox: "bob-client-acme", warnings: [], command: "sbx exec bob-client-acme" });
     const stop = await fetch(`${url}/api/stop`, { method: "POST", headers: auth(), body: JSON.stringify({ id: "client/acme" }) });
     expect(stop.status).toBe(200);
     const missing = await fetch(`${url}/api/launch`, { method: "POST", headers: auth(), body: JSON.stringify({ id: "client/ghost" }) });
