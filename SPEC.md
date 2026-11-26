@@ -1,6 +1,6 @@
 # SPEC — Bob : second brains cloisonnés pour un EM de prestataires
 
-> Statut : brouillon v0.14 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
+> Statut : brouillon v0.15 — 2026-11-25. Les points marqués **[À VALIDER]** attendent une décision.
 
 ## 1. Contexte et objectifs
 
@@ -276,7 +276,7 @@ Validé par prototype (sbx 0.54.0, opencode 2.4.1, faux proxy et faux amont loca
 
 Écarts avec la politique réseau décrite plus haut :
 
-1. **Le « deny-all par défaut » n'est pas garanti.** La politique **globale** de l'hôte, qui appartient à Romain, est permissive (nombreuses autorisations, dont les API des fournisseurs IA). Un `--deny-network '**'` par sandbox est inutilisable : un deny l'emporte toujours et masque l'autorisation du proxy. **Décision : `deny-all` global** pour `sbx` sur ce Mac (`sbx policy init deny-all`), puis autorisations explicites (proxy local, destinations des connecteurs activés, registres nécessaires). Bob **ne modifie jamais** la politique globale lui-même : il documente la commande, la politique appartient à Romain. Au démarrage et avant chaque lancement de brain, Bob vérifie (`sbx policy check network`) que les API LLM directes sont refusées et bloque sinon, avec le message et la commande à exécuter.
+1. **Le « deny-all par défaut » n'est pas garanti.** La politique **globale** de l'hôte, qui appartient à Romain, est permissive (nombreuses autorisations, dont les API des fournisseurs IA). Un `--deny-network '**'` par sandbox est inutilisable : un deny l'emporte toujours et masque l'autorisation du proxy. **Décision : politique globale `Balanced` conservée**, complétée par des **refus explicites des API IA directes** (`api.anthropic.com`, `api.openai.com`, `generativelanguage.googleapis.com`), car le préréglage `Balanced` autorise les services IA par défaut (règle `default-ai-services`, vérifiée). Les refus l'emportent sur les autorisations. `models.dev` (catalogue de modèles d'opencode, sans contenu) reste ouvert. Un `deny-all` global a été écarté : `sbx policy init` ne change pas une politique déjà initialisée (il faut `sbx policy reset` puis le choix « Locked Down »). Bob **ne modifie jamais** la politique globale lui-même : il documente les commandes (`sbx policy deny network <hôte>:443`), la politique appartient à Romain. Au démarrage et avant chaque lancement de brain, Bob vérifie (`sbx policy check network`) que les API LLM directes sont refusées et bloque sinon, avec le message et la commande à exécuter.
 2. Au démarrage, opencode contacte un service externe de catalogue de modèles : à neutraliser (option à identifier) ou à autoriser en connaissance de cause.
 3. `--env` ne s'applique pas à un sandbox déjà créé : fournir le placeholder à la création (`-e`) ou le mettre en dur dans `opencode.json`.
 
@@ -405,7 +405,7 @@ Sécurité des données d'Anarlog :
 2. Proxy : réutiliser, adapter ou réécrire (tableau §4.1) ? Instance par brain ou unique ? Profils `open`/`standard`/`strict` et entités personnalisées (noms de client, consultants) : ce que le proxy permet déjà ?
 3. Verrou de détection unique : effet sur les sous-agents parallèles d'opencode (à mesurer).
 4. Proxy (§4.6) : instance partagée ou par brain vu la RAM ; glossaire en `open` ; IBAN en `standard` ; alias d'une même entité.
-5. Neutralisation de l'appel de catalogue de modèles d'opencode (option de désactivation à identifier) ? Liste des autorisations explicites à conserver après le `deny-all` global (registres, outils de développement hors Bob) ?
+5. Neutralisation de l'appel de catalogue de modèles d'opencode (option de désactivation à identifier) ? Autres fournisseurs IA à refuser explicitement en plus des trois cités (liste à tenir à jour, car `Balanced` en autorise d'autres) ?
 6. Dossier de données d'Anarlog : volume chiffré avec lien symbolique, ou FileVault et rétention courte suffisent ? Un dossier Anarlog par client ?
 7. Combien de clients et de missions actifs à gérer, et quelle durée de conservation après la fin d'une mission ?
 8. Niveau de confiance acceptable pour le filtrage par libellés sur le compte entreprise (§5) ?
@@ -431,4 +431,4 @@ Sécurité des données d'Anarlog :
 - Glossaire par brain alimenté à la main et par propositions automatiques validées.
 - Pseudonymisation jetable par run (mapping en RAM) ; clés JSON jamais modifiées ; secrets toujours supprimés.
 - Secrets : jeton du proxy fourni par `sbx secret set-custom` (placeholder), clé amont uniquement dans le proxy hôte ; validé par prototype.
-- Politique réseau `sbx` : `deny-all` global, autorisations explicites ; Bob vérifie sans jamais modifier la politique globale.
+- Politique réseau `sbx` : `Balanced` conservé + refus explicites des API IA directes ; Bob vérifie (`sbx policy check network`) sans jamais modifier la politique globale.
